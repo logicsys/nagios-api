@@ -663,6 +663,12 @@ def http_acknowledge_problem(req, objid, reqobj):
     persistent = reqobj.get('persistent', 0)
     expire = reqobj.get('expire', 0)
 
+    #check rw user suffix if configured
+    if USRW is not None:
+        if not author.endswith(USRW):
+            return json_error(req, 'You do not have permission to Acknowledge this Problem.')
+
+
     obj = NAGIOS.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
@@ -1070,9 +1076,11 @@ def main(argv):
     '''A simple REST API for Nagios3.
 
     '''
-    global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY
+    global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, USRW
     app = Application()
 
+    usrw = None
+    
     parser = OptionParser(description='Give Nagios a REST API.')
     parser.add_option('-o', '--allow-origin', dest='alloworigin', metavar='ORIGIN',
             help='Access-Control-Allow-Origin header contents')
@@ -1095,7 +1103,15 @@ def main(argv):
             default=PID_FILE, help='File to write pid to')
     parser.add_option('-q', '--quiet', dest='quiet', action='store_true',
             help='Quiet mode')
+    parser.add_option('-u','--user-suffix-read-write', dest='usrw', metavar='USRW', type='string',help='Username suffix to allow rw')
     (options, args) = parser.parse_args(args=argv[1:])
+
+    if options.usrw is not None:
+        # print(options.usrw)
+        USRW = options.usrw
+        # print(USRW)
+
+        # exit()
 
     if not os.path.isfile(options.statusfile):
         parser.error('Status file not found: %s' % options.statusfile)
@@ -1104,6 +1120,8 @@ def main(argv):
 
     if options.quiet:
         log.min_level = levels.WARNING
+
+    
 
     if os.path.exists(options.commandfile):
         CMD_ENABLED = True
