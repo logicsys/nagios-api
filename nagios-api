@@ -297,6 +297,14 @@ def http_disable_notifications(req, objid, reqobj):
     service = reqobj.get('service')
     services_too = reqobj.get('services_too', False)
 
+    author = reqobj.get('author')
+
+    #check rw user suffix if configured
+    if USRW is not None:
+        if not author.endswith(USRW):
+            return json_error(req, 'You do not have permission to Disable Notifications.')
+
+
     obj = NAGIOS.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Host or service not found.')
@@ -439,6 +447,14 @@ def http_schedule_downtime(req, objid, reqobj):
     comment = reqobj.get('comment', 'schedule downtime')
     start_time = reqobj.get('start_time', now)
     fixed = reqobj.get('fixed', 1)
+
+
+    #check rw user suffix if configured
+    if USRW is not None:
+        if not author.endswith(USRW):
+            return json_error(req, 'You do not have permission to Schedule Downtime.')
+
+
     try:
         dur = int(reqobj.get('duration', 0))
     except ValueError:
