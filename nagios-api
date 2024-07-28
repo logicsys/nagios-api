@@ -1040,7 +1040,7 @@ def read_status(statusfile):
         if mtime is None or stat.st_mtime > mtime:
             try:
                NAGIOS = Nagios(statusfile)
-            except ValueError,e:
+            except ValueError as e:
                 print "You appear to have handed me a malformed status file - possibly the state retention file. Please check your arguments and try again."
                 sys.exit(-1)
             mtime = stat.st_mtime
