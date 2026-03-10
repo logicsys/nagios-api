@@ -33,6 +33,7 @@ from flask import Flask, Response, request as flask_request
 from nagios import Comment, Downtime, Nagios
 from werkzeug.exceptions import BadRequest
 from signal import signal, SIGTERM
+from waitress import serve
 
 log = logging.getLogger('nagios-api')
 CMD_LOCK = threading.Lock()
@@ -47,6 +48,65 @@ NLOGLINES = 0
 ALLOW_ORIGIN = None
 PID_FILE = "/var/run/nagios-api.pid"
 CFG_DIRECTORY = "/usr/local/nagios/etc/objects"
+API_KEYS = None
+CFG_FILENAME_RE = re.compile(r'^[a-zA-Z0-9._-]+\.cfg$')
+
+ALLOWED_NAGIOS_COMMANDS = {
+    'RESTART_PROGRAM',
+    'DISABLE_SVC_NOTIFICATIONS', 'DISABLE_HOST_NOTIFICATIONS',
+    'DISABLE_HOST_SVC_NOTIFICATIONS',
+    'ENABLE_SVC_NOTIFICATIONS', 'ENABLE_HOST_NOTIFICATIONS',
+    'ENABLE_HOST_SVC_NOTIFICATIONS',
+    'DISABLE_SVC_CHECK', 'DISABLE_HOST_CHECK', 'DISABLE_HOST_SVC_CHECKS',
+    'ENABLE_SVC_CHECK', 'ENABLE_HOST_CHECK', 'ENABLE_HOST_SVC_CHECKS',
+    'SCHEDULE_SVC_DOWNTIME', 'SCHEDULE_HOST_DOWNTIME',
+    'SCHEDULE_HOST_SVC_DOWNTIME',
+    'DEL_SVC_DOWNTIME', 'DEL_HOST_DOWNTIME',
+    'SCHEDULE_HOSTGROUP_HOST_DOWNTIME', 'SCHEDULE_HOSTGROUP_SVC_DOWNTIME',
+    'PROCESS_SERVICE_CHECK_RESULT', 'PROCESS_HOST_CHECK_RESULT',
+    'ACKNOWLEDGE_SVC_PROBLEM', 'ACKNOWLEDGE_SVC_PROBLEM_EXPIRE',
+    'ACKNOWLEDGE_HOST_PROBLEM', 'ACKNOWLEDGE_HOST_PROBLEM_EXPIRE',
+    'REMOVE_SVC_ACKNOWLEDGEMENT', 'REMOVE_HOST_ACKNOWLEDGEMENT',
+    'ADD_SVC_COMMENT', 'ADD_HOST_COMMENT',
+    'DEL_ALL_SVC_COMMENTS', 'DEL_SVC_COMMENT',
+    'DEL_ALL_HOST_COMMENTS', 'DEL_HOST_COMMENT',
+    'SCHEDULE_FORCED_SVC_CHECK', 'SCHEDULE_SVC_CHECK',
+    'SCHEDULE_FORCED_HOST_CHECK', 'SCHEDULE_HOST_CHECK',
+    'SCHEDULE_FORCED_HOST_SVC_CHECKS', 'SCHEDULE_HOST_SVC_CHECKS',
+}
+
+
+def load_api_keys(filepath):
+    '''Load API keys from a file, one key per line.
+    Blank lines and lines starting with # are ignored.
+    '''
+    keys = set()
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                keys.add(line)
+    if not keys:
+        raise ValueError('API key file contains no valid keys: %s' % filepath)
+    return keys
+
+
+def validate_allow_origin(origin_value):
+    '''Validate the --allow-origin value.
+    Rejects wildcard '*' and requires an origin URL.
+    Returns the validated value or raises ValueError.
+    '''
+    if origin_value == '*':
+        raise ValueError(
+            '--allow-origin "*" is insecure: it allows any website to '
+            'make cross-origin requests to this API. Specify an explicit '
+            'origin (e.g., "https://monitoring.example.com") or use '
+            '--allow-origin-unsafe-wildcard if you truly need this.')
+    if not origin_value.startswith(('http://', 'https://')):
+        raise ValueError(
+            '--allow-origin value should be an origin URL starting with '
+            'http:// or https:// (e.g., "https://monitoring.example.com")')
+    return origin_value
 
 
 def _send_json(req, success, content):
@@ -192,41 +252,88 @@ def http_restart_nagios(req, objid, reqobj):
     else:
         return json_response(req, 'Restart successful')
 
+
+def http_restart_nagios_get_rejected(req, objid, reqobj):
+    return json_error(req, 'restart_nagios requires POST method. '
+                      'GET is no longer supported for security reasons (CSRF).')
+
+
+def validate_nagios_command(command_str):
+    '''Validate a raw Nagios command string against the allowlist.
+    Returns (True, None) on success or (False, error_message) on failure.
+    '''
+    if not command_str or not isinstance(command_str, str):
+        return False, 'Missing or invalid command string.'
+    parts = command_str.split(';')
+    verb = parts[0].strip()
+    if verb not in ALLOWED_NAGIOS_COMMANDS:
+        return False, 'Command "%s" is not allowed.' % verb
+    for part in parts:
+        if '\n' in part or '\r' in part:
+            return False, 'Command arguments must not contain newlines.'
+    return True, None
+
+
+def safe_cfg_path(cfg_directory, file_name):
+    '''Validate and return a safe file path within cfg_directory.
+    Raises ValueError if the path is unsafe.
+    '''
+    if not file_name or not isinstance(file_name, str):
+        raise ValueError('No file name specified.')
+    safe_name = os.path.basename(file_name)
+    if not safe_name:
+        raise ValueError('Invalid file name.')
+    if not CFG_FILENAME_RE.match(safe_name):
+        raise ValueError(
+            'Invalid file name. Must contain only alphanumeric characters, '
+            'hyphens, underscores, dots, and must end with .cfg')
+    full_path = os.path.realpath(os.path.join(cfg_directory, safe_name))
+    real_dir = os.path.realpath(cfg_directory)
+    if not full_path.startswith(real_dir + os.sep):
+        raise ValueError('File path escapes config directory.')
+    return full_path
+
+
 def http_send_raw_command(req, objid, reqobj):
-    command = reqobj['command']
+    command = reqobj.get('command')
     if not command:
         return json_error(req, "Missing command to send to nagios")
+
+    valid, err = validate_nagios_command(command)
+    if not valid:
+        return json_error(req, err)
 
     if not send_nagios_command(command):
         return json_error(req, "Nagios command failed")
 
     return json_response(req, "Nagios command succeeded")
 
+
 def http_update_host(req, objid, reqobj):
 
     global CFG_DIRECTORY
 
     _mkdir_recursive(None, CFG_DIRECTORY)
-    file_name = reqobj['file_name']
-    text = reqobj['text']
 
-    if not file_name:
-        return json_error(req, 'No file path specified.')
+    file_name = reqobj.get('file_name')
+    text = reqobj.get('text')
 
     if not text:
         return json_error(req, 'No text specified.')
 
-    file_path = CFG_DIRECTORY + "/" + file_name
-
-    if os.path.isfile(file_path):
-        os.remove(file_path)
+    try:
+        file_path = safe_cfg_path(CFG_DIRECTORY, file_name)
+    except ValueError as e:
+        return json_error(req, str(e))
 
     try:
-        f = open(file_path, 'w')
-        f.write(text)
-        f.close()
+        if os.path.isfile(file_path):
+            os.remove(file_path)
 
-        sys.stdout.write("file saved %s " % file_name)
+        with open(file_path, 'w') as f:
+            f.write(text)
+
+        log.info('Config file saved: %s', os.path.basename(file_path))
 
         uid = pwd.getpwnam("nagios").pw_uid
         gid = grp.getgrnam("nagios").gr_gid
@@ -234,16 +341,10 @@ def http_update_host(req, objid, reqobj):
         if uid and gid:
             os.chown(file_path, uid, gid)
 
-        ret = {}
-        ret['message'] = "Update file "+file_path
-        return json_response(req, ret)
+        return json_response(req, {'message': 'Update file ' + os.path.basename(file_path)})
     except Exception as e:
-        sys.stderr.write("%s\n" % e)
-        sys.stderr.write("Unable to write file: %s\n" % file_name)
-
-        ret = {}
-        ret['message'] = "Unable to write file: "+file_path
-        return json_response(req, ret)
+        log.error('Unable to write file %s: %s', os.path.basename(file_path), e)
+        return json_error(req, 'Unable to write file.')
 
 
 def http_service(req, objid, reqobj):
@@ -296,14 +397,6 @@ def http_disable_notifications(req, objid, reqobj):
     host = reqobj.get('host')
     service = reqobj.get('service')
     services_too = reqobj.get('services_too', False)
-
-    author = reqobj.get('author')
-
-    #check rw user suffix if configured
-    if USRW is not None:
-        if not author.endswith(USRW):
-            return json_error(req, 'You do not have permission to Disable Notifications.')
-
 
     obj = NAGIOS.host_or_service(host, service)
     if obj is None:
@@ -447,12 +540,6 @@ def http_schedule_downtime(req, objid, reqobj):
     comment = reqobj.get('comment', 'schedule downtime')
     start_time = reqobj.get('start_time', now)
     fixed = reqobj.get('fixed', 1)
-
-
-    #check rw user suffix if configured
-    if USRW is not None:
-        if not author.endswith(USRW):
-            return json_error(req, 'You do not have permission to Schedule Downtime.')
 
 
     try:
@@ -678,12 +765,6 @@ def http_acknowledge_problem(req, objid, reqobj):
     notify = reqobj.get('notify', 1)
     persistent = reqobj.get('persistent', 0)
     expire = reqobj.get('expire', 0)
-
-    #check rw user suffix if configured
-    if USRW is not None:
-        if not author.endswith(USRW):
-            return json_error(req, 'You do not have permission to Acknowledge this Problem.')
-
 
     obj = NAGIOS.host_or_service(host, service)
     if obj is None:
@@ -969,9 +1050,10 @@ def http_handler(req):
             'problems': http_problems,
             'status': http_status,
             'service': http_service,
-            'restart_nagios': http_restart_nagios
+            'restart_nagios': http_restart_nagios_get_rejected
         },
         'POST': {
+            'restart_nagios': http_restart_nagios,
             'cancel_downtime': http_cancel_downtime,
             'schedule_downtime': http_schedule_downtime,
             'schedule_hostgroup_downtime': http_schedule_hostgroup_downtime,
@@ -1008,6 +1090,12 @@ def send_nagios_command(*args):
     if len(args) < 1:
         log.error('Not enough parameters to send command')
         return False
+    # Reject arguments containing newlines to prevent command injection
+    for a in args:
+        s = str(a)
+        if '\n' in s or '\r' in s:
+            log.error('Rejecting command argument containing newline')
+            return False
     arg = '[%d] ' % int(time.time()) + ';'.join(str(j) for j in args)
     arg_bytes = (arg + '\n').encode('utf-8')
     with CMD_LOCK:
@@ -1091,13 +1179,16 @@ def main(argv):
     '''A simple REST API for Nagios3.
 
     '''
-    global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, USRW
+    global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, API_KEYS
 
-    usrw = None
-    
     parser = OptionParser(description='Give Nagios a REST API.')
     parser.add_option('-o', '--allow-origin', dest='alloworigin', metavar='ORIGIN',
-            help='Access-Control-Allow-Origin header contents')
+            help='Access-Control-Allow-Origin header contents. Must be an '
+            'explicit origin URL (e.g., "https://monitoring.example.com").')
+    parser.add_option('--allow-origin-unsafe-wildcard',
+            dest='allow_unsafe_wildcard', action='store_true', default=False,
+            help='Allow --allow-origin to be set to "*". This is insecure '
+            'and should only be used in development or isolated environments.')
     parser.add_option('-s', '--status-file', dest='statusfile', metavar='FILE',
             default='/var/cache/nagios3/status.dat', help='The file that contains '
             'the Nagios status.')
@@ -1110,22 +1201,27 @@ def main(argv):
             default='/var/log/nagios3/nagios.log', help='The file Nagios writes '
             'log events to.')
     parser.add_option('-b', '--bind', dest='bind_addr', metavar='ADDR',
-            default='', help='The address to listen for requests on.')
+            default='127.0.0.1', help='The address to listen for requests on. '
+            'Defaults to 127.0.0.1 (localhost only). Use 0.0.0.0 to listen '
+            'on all interfaces.')
     parser.add_option('-p', '--port', dest='port', metavar='PORT', type='int',
             default=6315, help='The port to listen for requests on.')
     parser.add_option('-f', '--pid-file', dest='pid_file', metavar='PID_FILE',
             default=PID_FILE, help='File to write pid to')
     parser.add_option('-q', '--quiet', dest='quiet', action='store_true',
             help='Quiet mode')
-    parser.add_option('-u','--user-suffix-read-write', dest='usrw', metavar='USRW', type='string',help='Username suffix to allow rw')
+    parser.add_option('--dev', dest='dev', action='store_true', default=False,
+            help='Use Flask development server instead of waitress. '
+            'Not recommended for production.')
+    parser.add_option('-k', '--api-key-file', dest='apikeyfile', metavar='FILE',
+            help='File containing API keys (one per line). '
+            'When provided, all requests must include a valid key via '
+            'X-API-Key header or api_key query parameter.')
     (options, args) = parser.parse_args(args=argv[1:])
 
-    if options.usrw is not None:
-        # print(options.usrw)
-        USRW = options.usrw
-        # print(USRW)
-
-        # exit()
+    if options.apikeyfile is not None:
+        API_KEYS = load_api_keys(options.apikeyfile)
+        log.info('Loaded %d API key(s) from %s', len(API_KEYS), options.apikeyfile)
 
     if not os.path.isfile(options.statusfile):
         parser.error('Status file not found: %s' % options.statusfile)
@@ -1143,13 +1239,37 @@ def main(argv):
         CMD_ENABLED = True
         CMDFILE = options.commandfile
     if options.alloworigin:
-        ALLOW_ORIGIN = options.alloworigin
+        if options.allow_unsafe_wildcard:
+            ALLOW_ORIGIN = options.alloworigin
+            if options.alloworigin == '*':
+                log.warning('CORS wildcard origin enabled -- any website can '
+                            'make cross-origin requests to this API')
+        else:
+            try:
+                ALLOW_ORIGIN = validate_allow_origin(options.alloworigin)
+            except ValueError as e:
+                parser.error(str(e))
 
     CFG_DIRECTORY = options.cfgdirectory
     PID_FILE = options.pid_file
     write_pid()
 
     flask_app = Flask(__name__)
+
+    @flask_app.before_request
+    def check_auth():
+        if API_KEYS is None:
+            return None
+        key = (flask_request.headers.get('X-API-Key')
+               or flask_request.args.get('api_key'))
+        if not key or key not in API_KEYS:
+            log.warning('Rejected unauthenticated request from %s',
+                        flask_request.remote_addr)
+            return Response(
+                dumps({'success': False, 'content': 'Authentication required'}),
+                status=401,
+                content_type='application/json'
+            )
 
     @flask_app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
     @flask_app.route('/<path:path>', methods=['GET', 'POST'])
@@ -1168,8 +1288,17 @@ def main(argv):
             daemon=True)
         log_thread.start()
 
-    log.info('Listening on port %d, starting to rock and roll!' % options.port)
-    flask_app.run(host=options.bind_addr or '0.0.0.0', port=options.port)
+    if options.bind_addr == '0.0.0.0':
+        log.warning('Binding to 0.0.0.0 -- API is exposed on ALL network interfaces')
+
+    log.info('Listening on %s:%d, starting to rock and roll!',
+             options.bind_addr, options.port)
+    if options.dev:
+        log.warning('Running with Flask development server -- not for production use')
+        flask_app.run(host=options.bind_addr, port=options.port)
+    else:
+        serve(flask_app, host=options.bind_addr, port=options.port,
+              _quiet=options.quiet)
     return 1
 
 

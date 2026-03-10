@@ -14,5 +14,6 @@ setup(name='nagios-api',
       install_requires=[
         'flask>=2.0',
         'requests>=2.20',
+        'waitress>=2.0',
       ]
      )

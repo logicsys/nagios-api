@@ -16,4 +16,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN pip install --no-cache-dir --no-deps .
 
-CMD ["python", "/opt/nagios-api/nagios-api", "-p", "8080", "-s", "/opt/status.dat", "-c", "/opt/nagios.cmd", "-l", "/opt/nagios.log", "-q"]
+CMD ["python", "/opt/nagios-api/nagios-api", "-p", "8080", "-b", "0.0.0.0", "-s", "/opt/status.dat", "-c", "/opt/nagios.cmd", "-l", "/opt/nagios.log", "-q"]
