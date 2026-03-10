@@ -13,7 +13,7 @@ setup(name='nagios-api',
       scripts=['nagios-cli', 'nagios-api'],
       install_requires=[
         'diesel>=3.0',
-        'greenlet==0.3.4',
-        'requests'
+        'requests>=2.20',
+        'werkzeug>=2.0',
       ]
      )
