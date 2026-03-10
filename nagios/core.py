@@ -103,10 +103,8 @@ class Nagios:
 
         '''
         if service is not None:
-            try:
-                service = service.encode('utf-8')
-            except:
-                pass
+            if isinstance(service, bytes):
+                service = service.decode('utf-8')
         if host not in self.hosts:
             return None
         if service is None:  # Only a Host if they really want it.

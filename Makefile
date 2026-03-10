@@ -1,8 +1,10 @@
 include vars.env
 
 RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+BUILD_STAMP := .build.stamp
+BUILD_DEPS := Dockerfile.dev requirements.txt vars.env setup.py nagios/__init__.py nagios/core.py
 
-.PHONY: help build lint test clean
+.PHONY: help build lint test audit clean
 
 help:
 	@echo "Usage: make <target>"
@@ -10,16 +12,24 @@ help:
 	@echo "  build   Build the dev container image"
 	@echo "  lint    Run flake8 linter"
 	@echo "  test    Run pytest"
+	@echo "  audit   Audit dependencies for vulnerabilities"
 	@echo "  clean   Remove the dev container image"
 
-build:
+$(BUILD_STAMP): $(BUILD_DEPS)
 	scripts/build.sh
+	@touch $@
 
-lint:
+build: $(BUILD_STAMP)
+
+lint: $(BUILD_STAMP)
 	scripts/lint.sh
 
-test:
+test: $(BUILD_STAMP)
 	scripts/test.sh
+
+audit: $(BUILD_STAMP)
+	scripts/audit.sh
 
 clean:
 	$(RUNTIME) rmi $(IMAGE) 2>/dev/null || true
+	@rm -f $(BUILD_STAMP)

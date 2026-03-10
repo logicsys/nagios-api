@@ -6,4 +6,5 @@
 /dist/
 /debian/files
 /debian/*.substvars
+.build.stamp
 

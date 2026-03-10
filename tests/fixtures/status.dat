@@ -1,0 +1,175 @@
+info {
+	created=1609459200
+	version=4.4.6
+	last_update_check=1609459100
+	update_available=0
+	last_version=4.4.6
+	new_version=4.4.6
+	}
+
+programstatus {
+	modified_host_attributes=0
+	modified_service_attributes=0
+	nagios_pid=12345
+	daemon_mode=1
+	program_start=1609459000
+	last_log_rotation=1609372800
+	enable_notifications=1
+	active_service_checks_enabled=1
+	passive_service_checks_enabled=1
+	active_host_checks_enabled=1
+	passive_host_checks_enabled=1
+	enable_event_handlers=1
+	obsess_over_services=0
+	obsess_over_hosts=0
+	check_service_freshness=1
+	check_host_freshness=0
+	enable_flap_detection=1
+	process_performance_data=1
+	global_host_event_handle=
+	global_service_event_handle=
+	next_comment_id=100
+	next_downtime_id=50
+	next_event_id=200
+	next_problem_id=75
+	next_notification_id=300
+	active_scheduled_host_check_stats=5,10,15
+	active_ondemand_host_check_stats=0,0,0
+	passive_host_check_stats=0,0,0
+	active_scheduled_service_check_stats=20,40,60
+	active_ondemand_service_check_stats=0,0,0
+	passive_service_check_stats=0,0,0
+	cached_host_check_stats=0,0,0
+	cached_service_check_stats=0,0,0
+	external_command_stats=1,2,3
+	parallel_host_check_stats=5,10,15
+	serial_host_check_stats=0,0,0
+	}
+
+hoststatus {
+	host_name=web01
+	current_state=0
+	plugin_output=PING OK - Packet loss = 0%, RTA = 0.50 ms
+	notifications_enabled=1
+	last_check=1609459100
+	last_notification=0
+	active_checks_enabled=1
+	problem_has_been_acknowledged=0
+	last_hard_state=0
+	scheduled_downtime_depth=0
+	performance_data=rta=0.50ms;100.00;500.00;0; pl=0%;20;60;0
+	last_state_change=1609372800
+	current_attempt=1
+	max_attempts=5
+	}
+
+hoststatus {
+	host_name=db01
+	current_state=1
+	plugin_output=PING CRITICAL - Packet loss = 100%
+	notifications_enabled=1
+	last_check=1609459100
+	last_notification=1609459150
+	active_checks_enabled=1
+	problem_has_been_acknowledged=0
+	last_hard_state=1
+	scheduled_downtime_depth=0
+	performance_data=rta=0ms;100.00;500.00;0; pl=100%;20;60;0
+	last_state_change=1609459100
+	current_attempt=5
+	max_attempts=5
+	}
+
+servicestatus {
+	host_name=web01
+	service_description=HTTP
+	current_state=0
+	plugin_output=HTTP OK: HTTP/1.1 200 OK - 1234 bytes in 0.010 second response time
+	notifications_enabled=1
+	last_check=1609459100
+	last_notification=0
+	active_checks_enabled=1
+	problem_has_been_acknowledged=0
+	last_hard_state=0
+	scheduled_downtime_depth=0
+	performance_data=time=0.010s;10.00;20.00;0; size=1234B;0;0;0
+	last_state_change=1609372800
+	current_attempt=1
+	max_attempts=3
+	}
+
+servicestatus {
+	host_name=web01
+	service_description=SSH
+	current_state=2
+	plugin_output=CRITICAL - Socket timeout after 10 seconds
+	notifications_enabled=1
+	last_check=1609459100
+	last_notification=1609459120
+	active_checks_enabled=1
+	problem_has_been_acknowledged=1
+	last_hard_state=2
+	scheduled_downtime_depth=0
+	performance_data=
+	last_state_change=1609459000
+	current_attempt=3
+	max_attempts=3
+	}
+
+servicestatus {
+	host_name=db01
+	service_description=MySQL
+	current_state=0
+	plugin_output=MySQL OK - 0.005 sec. response time
+	notifications_enabled=1
+	last_check=1609459100
+	last_notification=0
+	active_checks_enabled=1
+	problem_has_been_acknowledged=0
+	last_hard_state=0
+	scheduled_downtime_depth=0
+	performance_data=time=0.005s;5.00;10.00;0;
+	last_state_change=1609372800
+	current_attempt=1
+	max_attempts=3
+	}
+
+hostcomment {
+	host_name=web01
+	comment_id=1
+	entry_type=1
+	source=1
+	persistent=1
+	entry_time=1609459100
+	expires=0
+	expire_time=0
+	author=admin
+	comment_data=Host looks good
+	}
+
+servicecomment {
+	host_name=web01
+	service_description=SSH
+	comment_id=2
+	entry_type=1
+	source=1
+	persistent=0
+	entry_time=1609459120
+	expires=0
+	expire_time=0
+	author=oncall
+	comment_data=Investigating SSH timeout
+	}
+
+hostdowntime {
+	host_name=db01
+	downtime_id=10
+	entry_time=1609459000
+	start_time=1609459000
+	end_time=1609462600
+	triggered_by=0
+	fixed=1
+	duration=3600
+	author=admin
+	comment=Scheduled maintenance
+	}

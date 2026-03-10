@@ -8,7 +8,8 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir \
     flake8 \
     pytest \
-    pyflakes
+    pyflakes \
+    pip-audit
 
 WORKDIR /app
 COPY requirements.txt .
