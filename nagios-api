@@ -271,12 +271,8 @@ def http_host(req, objid, reqobj):
     return json_response(req, ret)
 
 
-def _mkdir_recursive(self, path):
-    sub_path = os.path.dirname(path)
-    if not os.path.exists(sub_path):
-        _mkdir_recursive(self, sub_path)
-    if not os.path.exists(path):
-        os.mkdir(path)
+def _mkdir_recursive(path):
+    os.makedirs(path, mode=0o755, exist_ok=True)
 
 def http_restart_nagios(req, objid, reqobj):
     if not send_nagios_command('RESTART_PROGRAM'):
@@ -345,7 +341,7 @@ def http_update_host(req, objid, reqobj):
 
     global CFG_DIRECTORY
 
-    _mkdir_recursive(None, CFG_DIRECTORY)
+    _mkdir_recursive(CFG_DIRECTORY)
 
     file_name = reqobj.get('file_name')
     text = reqobj.get('text')
@@ -1110,11 +1106,20 @@ def send_nagios_command(*args):
     if len(args) < 1:
         log.error('Not enough parameters to send command')
         return False
-    # Reject arguments containing newlines to prevent command injection
-    for a in args:
+    # Reject arguments containing newlines or semicolons to prevent
+    # command injection.  Nagios commands are semicolon-delimited, so a
+    # semicolon inside an argument (e.g. comment or author) would be
+    # interpreted as an extra field by Nagios.
+    # The first arg is the command verb (or a pre-validated raw command
+    # string that legitimately contains semicolons), so semicolon checks
+    # apply only to subsequent arguments.
+    for i, a in enumerate(args):
         s = str(a)
         if '\n' in s or '\r' in s:
             log.error('Rejecting command argument containing newline')
+            return False
+        if i > 0 and ';' in s:
+            log.error('Rejecting command argument containing semicolon')
             return False
     arg = '[%d] ' % int(time.time()) + ';'.join(str(j) for j in args)
     arg_bytes = (arg + '\n').encode('utf-8')
@@ -1298,6 +1303,12 @@ def main(argv):
     CFG_DIRECTORY = options.cfgdirectory
     PID_FILE = options.pid_file
     write_pid()
+
+    if CMD_ENABLED and API_KEYS is None:
+        log.warning('Command file is enabled but no API key file is configured. '
+                    'Write endpoints (update_host, raw_command, restart, downtime, '
+                    'etc.) are accessible without authentication. '
+                    'Use --api-key-file to require auth.')
 
     if API_KEYS and not options.tls_cert:
         log.warning('API key authentication is enabled but TLS is not. '
