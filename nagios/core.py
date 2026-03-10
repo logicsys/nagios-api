@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 #
 # core Nagios classes.
 #
@@ -85,16 +85,16 @@ class Nagios:
         f.close()
 
         for host in self.services:
-            for s in self.services[host].itervalues():
+            for s in self.services[host].values():
                 self.host_or_service(host).attach_service(s)
-        for c in self.comments.itervalues():
+        for c in self.comments.values():
             tmp = self.host_or_service(c.host, c.service)
             if (tmp is None):
                 # FIXME: throw something?
                 pass
             else:
                 tmp.attach_comment(c)
-        for d in self.downtimes.itervalues():
+        for d in self.downtimes.values():
             self.host_or_service(d.host, d.service).attach_downtime(d)
 
     def host_or_service(self, host, service=None):

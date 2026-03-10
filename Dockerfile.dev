@@ -1,0 +1,20 @@
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libffi-dev libssl-dev gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    flake8 \
+    pytest \
+    pyflakes
+
+WORKDIR /app
+COPY requirements.txt .
+# Install deps best-effort; some legacy packages may not support Python 3 yet
+RUN pip install --no-cache-dir -r requirements.txt || true
+
+COPY . .
+# Install the package itself so imports resolve
+RUN pip install --no-cache-dir -e . || true

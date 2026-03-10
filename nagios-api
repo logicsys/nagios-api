@@ -22,11 +22,11 @@ import sys
 import time
 import types
 import atexit
-import urllib
+from urllib.parse import unquote
 import pwd
 import grp
 from gzip import GzipFile
-from StringIO import StringIO
+from io import StringIO
 from optparse import OptionParser
 from diesel import Application, Loop, Service, sleep
 from diesel.logmod import log, levels
@@ -934,7 +934,7 @@ def http_handler(req):
     # All requests should follow this very simple format.
     global URL_REGEX
     url = req.script_root + req.path
-    url = urllib.unquote(url).decode('utf8')
+    url = unquote(url)
     res = URL_REGEX.match(url)
     if res is None:
         return json_error(req, 'Invalid request URI')
@@ -1041,7 +1041,7 @@ def read_status(statusfile):
             try:
                NAGIOS = Nagios(statusfile)
             except ValueError as e:
-                print "You appear to have handed me a malformed status file - possibly the state retention file. Please check your arguments and try again."
+                print("You appear to have handed me a malformed status file - possibly the state retention file. Please check your arguments and try again.")
                 sys.exit(-1)
             mtime = stat.st_mtime
         sleep(1)
@@ -1163,9 +1163,9 @@ def main(argv):
 def _exitfunc(*args):
     global PID_FILE
     if PID_FILE is not None and os.path.isfile(PID_FILE):
-        print "Cleaning up PID."
+        print("Cleaning up PID.")
         os.unlink(PID_FILE)
-    print "Exiting."
+    print("Exiting.")
     sys.exit(0)
 
 
