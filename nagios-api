@@ -31,7 +31,7 @@ from io import BytesIO
 from optparse import OptionParser
 from json import dumps
 from flask import Flask, Response, request as flask_request
-from nagios import Comment, Downtime, Nagios
+from nagios import Nagios
 from werkzeug.exceptions import BadRequest
 from signal import signal, SIGTERM
 from waitress import serve
@@ -173,8 +173,7 @@ def _send_json(req, success, content):
     '''Internal JSON sender.
 
     '''
-    global ALLOW_ORIGIN
-    out = dumps({ 'success': success, 'content': content }, ensure_ascii=False)
+    out = dumps({'success': success, 'content': content}, ensure_ascii=False)
     headers = {
         'Content-Type': 'application/json'
     }
@@ -288,6 +287,7 @@ def http_host(req, objid, reqobj):
 def _mkdir_recursive(path):
     os.makedirs(path, mode=0o755, exist_ok=True)
 
+
 def http_restart_nagios(req, objid, reqobj):
     if not send_nagios_command('RESTART_PROGRAM'):
         return json_error(req, 'Restart failed.')
@@ -352,9 +352,6 @@ def http_send_raw_command(req, objid, reqobj):
 
 
 def http_update_host(req, objid, reqobj):
-
-    global CFG_DIRECTORY
-
     _mkdir_recursive(CFG_DIRECTORY)
 
     file_name = reqobj.get('file_name')
@@ -482,6 +479,7 @@ def http_enable_notifications(req, objid, reqobj):
                 return json_error(req, 'Failed sending command to Nagios.')
     return json_response(req, 'enabled')
 
+
 def http_disable_checks(req, objid, reqobj):
     '''Given a service or host, disable active checks for it.
 
@@ -585,22 +583,25 @@ def http_schedule_downtime(req, objid, reqobj):
     if fixed == 1:
         # duration is unused by Nagios for fixed downtime
         dur = 0
-    else: # flexible downtime
+    else:  # flexible downtime
         # The Nagios C code defines duration as an unsigned long
         if dur < 1 or dur > 4294967295:
             return json_error(req, 'Flexible dowtime duration must be between 1 and 4,294,967,295 seconds')
 
     if obj.service is not None:
-        if not send_nagios_command('SCHEDULE_SVC_DOWNTIME', host, service, start_time,
-                                   end_time, fixed, 0, dur, author, comment):
+        if not send_nagios_command(
+                'SCHEDULE_SVC_DOWNTIME', host, service, start_time,
+                end_time, fixed, 0, dur, author, comment):
             return json_error(req, 'Failed sending command to Nagios.')
     else:
-        if not send_nagios_command('SCHEDULE_HOST_DOWNTIME', host, start_time, end_time,
-                                   fixed, 0, dur, author, comment):
+        if not send_nagios_command(
+                'SCHEDULE_HOST_DOWNTIME', host, start_time, end_time,
+                fixed, 0, dur, author, comment):
             return json_error(req, 'Failed sending command to Nagios.')
         if services_too:
-            if not send_nagios_command('SCHEDULE_HOST_SVC_DOWNTIME', host, start_time, end_time,
-                                       fixed, 0, dur, author, comment):
+            if not send_nagios_command(
+                    'SCHEDULE_HOST_SVC_DOWNTIME', host, start_time, end_time,
+                    fixed, 0, dur, author, comment):
                 return json_error(req, 'Failed sending command to Nagios.')
     return json_response(req, 'scheduled')
 
@@ -653,7 +654,6 @@ def http_cancel_downtime(req, objid, reqobj):
         return json_response(req, 'none found')
 
 
-
 def http_schedule_hostgroup_downtime(req, objid, reqobj):
     '''Given a hostgroup, schedule downtime for all the hosts in the hostgroup.
     The main mode for this API is to schedule a hard downtime that starts now and ends
@@ -687,20 +687,21 @@ def http_schedule_hostgroup_downtime(req, objid, reqobj):
     if fixed == 1:
         # duration is unused by Nagios for fixed downtime
         dur = 0
-    else: # flexible downtime
+    else:  # flexible downtime
         # The Nagios C code defines duration as an unsigned long
         if dur < 1 or dur > 4294967295:
             return json_error(req, 'Flexible dowtime duration must be between 1 and 4,294,967,295 seconds')
 
-    if not send_nagios_command('SCHEDULE_HOSTGROUP_HOST_DOWNTIME', hostgroup, start_time,
-                                end_time, fixed, 0, dur, author, comment):
+    if not send_nagios_command(
+            'SCHEDULE_HOSTGROUP_HOST_DOWNTIME', hostgroup, start_time,
+            end_time, fixed, 0, dur, author, comment):
         return json_error(req, 'Failed sending command to Nagios.')
     if services_too:
-        if not send_nagios_command('SCHEDULE_HOSTGROUP_SVC_DOWNTIME', hostgroup, start_time, end_time,
-                                    fixed, 0, dur, author, comment):
+        if not send_nagios_command(
+                'SCHEDULE_HOSTGROUP_SVC_DOWNTIME', hostgroup, start_time,
+                end_time, fixed, 0, dur, author, comment):
             return json_error(req, 'Failed sending command to Nagios.')
     return json_response(req, 'scheduled')
-
 
 
 def http_submit_result(req, objid, reqobj):
@@ -813,21 +814,25 @@ def http_acknowledge_problem(req, objid, reqobj):
 
     if obj.service is not None:
         if expire > 0:
-            if not send_nagios_command('ACKNOWLEDGE_SVC_PROBLEM_EXPIRE', host, service,
-                                        sticky, notify, persistent, expire, author, comment):
+            if not send_nagios_command(
+                    'ACKNOWLEDGE_SVC_PROBLEM_EXPIRE', host, service,
+                    sticky, notify, persistent, expire, author, comment):
                 return json_error(req, 'Failed sending command to Nagios.')
         else:
-            if not send_nagios_command('ACKNOWLEDGE_SVC_PROBLEM', host, service,
-                                        sticky, notify, persistent, author, comment):
+            if not send_nagios_command(
+                    'ACKNOWLEDGE_SVC_PROBLEM', host, service,
+                    sticky, notify, persistent, author, comment):
                 return json_error(req, 'Failed sending command to Nagios.')
     else:
         if expire > 0:
-            if not send_nagios_command('ACKNOWLEDGE_HOST_PROBLEM_EXPIRE', host, sticky,
-                                        notify, persistent, expire, author, comment):
+            if not send_nagios_command(
+                    'ACKNOWLEDGE_HOST_PROBLEM_EXPIRE', host, sticky,
+                    notify, persistent, expire, author, comment):
                 return json_error(req, 'Failed sending command to Nagios.')
         else:
-            if not send_nagios_command('ACKNOWLEDGE_HOST_PROBLEM', host, sticky,
-                                        notify, persistent, author, comment):
+            if not send_nagios_command(
+                    'ACKNOWLEDGE_HOST_PROBLEM', host, sticky,
+                    notify, persistent, author, comment):
                 return json_error(req, 'Failed sending command to Nagios.')
     return json_response(req, 'submitted')
 
@@ -904,12 +909,14 @@ def http_add_comment(req, objid, reqobj):
         return json_error(req, 'Invalid value provided for persistent')
 
     if obj.service is not None:
-        if not send_nagios_command('ADD_SVC_COMMENT', host, service,
-                                    persistent, author, comment):
+        if not send_nagios_command(
+                'ADD_SVC_COMMENT', host, service,
+                persistent, author, comment):
             return json_error(req, 'Failed sending command to Nagios.')
     else:
-        if not send_nagios_command('ADD_HOST_COMMENT', host,
-                                    persistent, author, comment):
+        if not send_nagios_command(
+                'ADD_HOST_COMMENT', host,
+                persistent, author, comment):
             return json_error(req, 'Failed sending command to Nagios.')
     return json_response(req, 'submitted')
 
@@ -1043,7 +1050,6 @@ def http_handler(req):
 
     '''
     # All requests should follow this very simple format.
-    global URL_REGEX
     url = req.script_root + req.path
     url = unquote(url)
     res = URL_REGEX.match(url)
@@ -1066,8 +1072,9 @@ def http_handler(req):
             return json_error(req, 'Invalid JSON body')
 
         if reqobj is None:
-            return json_error(req, 'No JSON detected, did you set '
-                    'the Content-Type to application/json?')
+            return json_error(
+                req, 'No JSON detected, did you set '
+                'the Content-Type to application/json?')
 
     # Dispatch table goes here
     dispatch = {
@@ -1113,7 +1120,6 @@ def send_nagios_command(*args):
     '''Send a simple command to our local Nagios server.
 
     '''
-    global CMDFILE, CMD_ENABLED
     if not CMD_ENABLED:
         log.error('Command is disabled')
         return False  # May not be enabled.
@@ -1144,12 +1150,12 @@ def send_nagios_command(*args):
     with CMD_LOCK:
         log.info('Sending command: %s' % arg)
         try:
-          fd = os.open(CMDFILE, os.O_WRONLY)
-          os.write(fd, arg_bytes)
-          os.close(fd)
+            fd = os.open(CMDFILE, os.O_WRONLY)
+            os.write(fd, arg_bytes)
+            os.close(fd)
         except Exception as e:
-          log.error(e)
-          return False
+            log.error(e)
+            return False
         return True
 
 
@@ -1207,11 +1213,11 @@ def read_log(logfile):
                 NLOG = NLOG[-1000:]
     f.close()
 
+
 def write_pid():
     '''Write pid file atomically using O_CREAT|O_EXCL to prevent races.
 
     '''
-    global PID_FILE
     try:
         fd = os.open(PID_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.write(fd, str(os.getpid()).encode('utf-8'))
@@ -1224,6 +1230,7 @@ def write_pid():
         sys.stderr.write("Unable to write pid file: %s\n" % PID_FILE)
         sys.exit(1)
 
+
 def main(argv):
     '''A simple REST API for Nagios3.
 
@@ -1231,51 +1238,54 @@ def main(argv):
     global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, API_KEYS, RATE_LIMITER
 
     parser = OptionParser(description='Give Nagios a REST API.')
-    parser.add_option('-o', '--allow-origin', dest='alloworigin', metavar='ORIGIN',
-            help='Access-Control-Allow-Origin header contents. Must be an '
-            'explicit origin URL (e.g., "https://monitoring.example.com").')
+    parser.add_option('-o', '--allow-origin', dest='alloworigin',
+                      metavar='ORIGIN',
+                      help='Access-Control-Allow-Origin header contents. Must be an '
+                      'explicit origin URL (e.g., "https://monitoring.example.com").')
     parser.add_option('--allow-origin-unsafe-wildcard',
-            dest='allow_unsafe_wildcard', action='store_true', default=False,
-            help='Allow --allow-origin to be set to "*". This is insecure '
-            'and should only be used in development or isolated environments.')
+                      dest='allow_unsafe_wildcard', action='store_true', default=False,
+                      help='Allow --allow-origin to be set to "*". This is insecure '
+                      'and should only be used in development or isolated environments.')
     parser.add_option('-s', '--status-file', dest='statusfile', metavar='FILE',
-            default='/var/cache/nagios3/status.dat', help='The file that contains '
-            'the Nagios status.')
+                      default='/var/cache/nagios3/status.dat',
+                      help='The file that contains the Nagios status.')
     parser.add_option('-c', '--command-file', dest='commandfile', metavar='FILE',
-            default='/var/lib/nagios3/rw/nagios.cmd', help='The file to write '
-            'Nagios commands to.')
-    parser.add_option('-d', '--config-directory', dest='cfgdirectory', metavar='PATH',
-            default='/usr/local/nagios/etc/objects', help='Storage location for update_host endpoint files')
+                      default='/var/lib/nagios3/rw/nagios.cmd',
+                      help='The file to write Nagios commands to.')
+    parser.add_option('-d', '--config-directory', dest='cfgdirectory',
+                      metavar='PATH', default='/usr/local/nagios/etc/objects',
+                      help='Storage location for update_host endpoint files')
     parser.add_option('-l', '--log-file', dest='logfile', metavar='FILE',
-            default='/var/log/nagios3/nagios.log', help='The file Nagios writes '
-            'log events to.')
+                      default='/var/log/nagios3/nagios.log',
+                      help='The file Nagios writes log events to.')
     parser.add_option('-b', '--bind', dest='bind_addr', metavar='ADDR',
-            default='127.0.0.1', help='The address to listen for requests on. '
-            'Defaults to 127.0.0.1 (localhost only). Use 0.0.0.0 to listen '
-            'on all interfaces.')
+                      default='127.0.0.1',
+                      help='The address to listen for requests on. '
+                      'Defaults to 127.0.0.1 (localhost only). Use 0.0.0.0 to listen '
+                      'on all interfaces.')
     parser.add_option('-p', '--port', dest='port', metavar='PORT', type='int',
-            default=6315, help='The port to listen for requests on.')
+                      default=6315, help='The port to listen for requests on.')
     parser.add_option('-f', '--pid-file', dest='pid_file', metavar='PID_FILE',
-            default=PID_FILE, help='File to write pid to')
+                      default=PID_FILE, help='File to write pid to')
     parser.add_option('-q', '--quiet', dest='quiet', action='store_true',
-            help='Quiet mode')
+                      help='Quiet mode')
     parser.add_option('--dev', dest='dev', action='store_true', default=False,
-            help='Use Flask development server instead of waitress. '
-            'Not recommended for production.')
+                      help='Use Flask development server instead of waitress. '
+                      'Not recommended for production.')
     parser.add_option('-k', '--api-key-file', dest='apikeyfile', metavar='FILE',
-            help='File containing API keys (one per line). '
-            'When provided, all requests must include a valid key via '
-            'X-API-Key header or api_key query parameter.')
+                      help='File containing API keys (one per line). '
+                      'When provided, all requests must include a valid key via '
+                      'X-API-Key header or api_key query parameter.')
     parser.add_option('--rate-limit', dest='rate_limit', type='float',
-            default=0, metavar='RPS',
-            help='Max requests per second per IP (0 = unlimited). Default: 0')
+                      default=0, metavar='RPS',
+                      help='Max requests per second per IP (0 = unlimited). Default: 0')
     parser.add_option('--rate-limit-burst', dest='rate_burst', type='int',
-            default=20, metavar='N',
-            help='Burst size for rate limiter. Default: 20')
+                      default=20, metavar='N',
+                      help='Burst size for rate limiter. Default: 20')
     parser.add_option('--tls-cert', dest='tls_cert', metavar='FILE',
-            help='Path to TLS certificate file (PEM). Enables HTTPS.')
+                      help='Path to TLS certificate file (PEM). Enables HTTPS.')
     parser.add_option('--tls-key', dest='tls_key', metavar='FILE',
-            help='Path to TLS private key file (PEM). Required with --tls-cert.')
+                      help='Path to TLS private key file (PEM). Required with --tls-cert.')
     (options, args) = parser.parse_args(args=argv[1:])
 
     if options.apikeyfile is not None:
@@ -1300,8 +1310,6 @@ def main(argv):
         logging.basicConfig(level=logging.WARNING)
     else:
         logging.basicConfig(level=logging.INFO)
-
-    
 
     if os.path.exists(options.commandfile):
         CMD_ENABLED = True
@@ -1435,7 +1443,6 @@ def _loop_forever(func, *args):
 
 
 def _exitfunc(*args):
-    global PID_FILE
     if PID_FILE is not None and os.path.isfile(PID_FILE):
         try:
             os.unlink(PID_FILE)

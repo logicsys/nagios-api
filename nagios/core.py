@@ -59,7 +59,10 @@ class Nagios:
                     cur[key] = val
                 elif "#" in line:
                     if not line.find("NAGIOS STATE RETENTION FILE"):
-                        raise ValueError("You appear to have used the state retention file instead of the status file. Please change your arguments and try again.")
+                        raise ValueError(
+                            "You appear to have used the state retention file "
+                            "instead of the status file. Please change your "
+                            "arguments and try again.")
             if cur is not None:
                 yield cur
 
@@ -152,7 +155,7 @@ class Info(NagiosObject):
     def __init__(self, obj):
         NagiosObject.__init__(self, obj)
         self.essential_keys = ['created', 'version', 'last_update_check',
-           'update_available', 'last_version', 'new_version']
+                               'update_available', 'last_version', 'new_version']
 
 
 class Program(NagiosObject):
@@ -208,10 +211,10 @@ class HostOrService(NagiosObject):
         self.downtimes = {}
         self.comments = {}
         self.essential_keys = ['current_state', 'plugin_output',
-            'notifications_enabled', 'last_check', 'last_notification',
-            'active_checks_enabled', 'problem_has_been_acknowledged',
-            'last_hard_state', 'scheduled_downtime_depth', 'performance_data',
-            'last_state_change', 'current_attempt', 'max_attempts']
+                               'notifications_enabled', 'last_check', 'last_notification',
+                               'active_checks_enabled', 'problem_has_been_acknowledged',
+                               'last_hard_state', 'scheduled_downtime_depth', 'performance_data',
+                               'last_state_change', 'current_attempt', 'max_attempts']
 
     def attach_downtime(self, dt):
         '''Given a Downtime object, store a record to it for lookup later.'''
@@ -220,7 +223,6 @@ class HostOrService(NagiosObject):
     def attach_comment(self, cmt):
         '''Given a Comment object, store a record to it for lookup later.'''
         self.comments[cmt.comment_id] = cmt
-
 
 
 class Host(HostOrService):
@@ -268,8 +270,8 @@ class Comment(NagiosObject):
         '''Custom build a Comment object.'''
         NagiosObject.__init__(self, obj)
         self.essential_keys = ['comment_id', 'entry_type', 'source',
-            'persistent', 'entry_time', 'expires', 'expire_time', 'author',
-            'comment_data']
+                               'persistent', 'entry_time', 'expires', 'expire_time', 'author',
+                               'comment_data']
         self.comment_id = int(self.comment_id)
 
 
@@ -281,6 +283,6 @@ class Downtime(NagiosObject):
         '''Custom build a Downtime object.'''
         NagiosObject.__init__(self, obj)
         self.essential_keys = ['downtime_id', 'entry_time', 'start_time',
-            'end_time', 'triggered_by', 'fixed', 'duration', 'author',
-            'comment']
+                               'end_time', 'triggered_by', 'fixed', 'duration', 'author',
+                               'comment']
         self.downtime_id = int(self.downtime_id)

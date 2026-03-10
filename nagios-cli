@@ -60,7 +60,7 @@ import re
 import requests
 import sys
 from json import loads, dumps
-from optparse import OptionParser, OptionGroup
+from optparse import OptionParser
 
 
 URL = None  # To the Nagios API "http://foo:6315"
@@ -87,7 +87,6 @@ def consume_host_service(args):
     that you can send to the API.
 
     '''
-    global NAGIOS
     if args is None or len(args) <= 0:
         return None
     if args[0] not in NAGIOS:
@@ -107,8 +106,6 @@ def api(args):
     an integer exit code on failure.
 
     '''
-    global URL, NAGIOS
-
     # The rest of the data is now in args, build the URL
     verb = args[0]
     objid = args[1] if len(args) >= 2 and args[1].isdigit() else ''
@@ -117,7 +114,7 @@ def api(args):
     # Now build the reqobj
     obj = {}
     for kv in args[2 if objid else 1:]:
-        if not '=' in kv:
+        if '=' not in kv:
             return critical('Parameter "%s" does not conform to expected key=value format' % kv)
         key, value = kv.split('=', 1)
         obj[key] = value
@@ -130,17 +127,17 @@ def api(args):
 
     try:
         if payload is None:
-            if AUTH :
-                res = requests.get(url, auth=(USER,PASSWORD))
+            if AUTH:
+                res = requests.get(url, auth=(USER, PASSWORD))
             else:
                 res = requests.get(url)
         else:
-            if AUTH :
-                res = requests.post(url, data=payload, auth=(USER,PASSWORD),
-                        headers={'Content-Type': 'application/json'})
+            if AUTH:
+                res = requests.post(url, data=payload, auth=(USER, PASSWORD),
+                                    headers={'Content-Type': 'application/json'})
             else:
                 res = requests.post(url, data=payload,
-                        headers={'Content-Type': 'application/json'})
+                                    headers={'Content-Type': 'application/json'})
     except (requests.ConnectionError, requests.Timeout):
         return critical('Failed connecting to nagios-api server')
     if res is None:
@@ -201,11 +198,11 @@ def do_schedule_downtime(cmd, args, opts):
     p = OptionParser(usage=trim(do_schedule_downtime.__doc__))
     p.disable_interspersed_args()
     p.add_option('-a', '--author', dest='author', metavar='NAME',
-        help='Author to blame for this downtime')
+                 help='Author to blame for this downtime')
     p.add_option('-c', '--comment', dest='comment', metavar='TEXT',
-        help='Explanatory comment to leave on the downtime')
+                 help='Explanatory comment to leave on the downtime')
     p.add_option('-r', '--recursive', dest='recursive', action='store_true',
-        help='Schedule for all services on the given host')
+                 help='Schedule for all services on the given host')
     p.set_defaults(recursive=False, author=None, comment=None)
 
     selargs = consume_host_service(args)
@@ -271,7 +268,7 @@ def do_cancel_downtime(cmd, args, opts):
     p = OptionParser(usage=trim(do_cancel_downtime.__doc__))
     p.disable_interspersed_args()
     p.add_option('-r', '--recursive', dest='recursive', action='store_true',
-        help='Cancel for all services on the given host')
+                 help='Cancel for all services on the given host')
     p.set_defaults(recursive=False, author=None, comment=None)
 
     selargs = consume_host_service(args)
@@ -320,7 +317,7 @@ def do_disable_notifications(cmd, args, opts):
     p = OptionParser(usage=trim(do_disable_notifications.__doc__))
     p.disable_interspersed_args()
     p.add_option('-r', '--recursive', dest='recursive', action='store_true',
-        help='Disable for all services on the given host')
+                 help='Disable for all services on the given host')
     p.set_defaults(recursive=False, author=None, comment=None)
 
     selargs = consume_host_service(args)
@@ -369,7 +366,7 @@ def do_enable_notifications(cmd, args, opts):
     p = OptionParser(usage=trim(do_enable_notifications.__doc__))
     p.disable_interspersed_args()
     p.add_option('-r', '--recursive', dest='recursive', action='store_true',
-        help='Enable for all services on the given host')
+                 help='Enable for all services on the given host')
     p.set_defaults(recursive=False, author=None, comment=None)
 
     selargs = consume_host_service(args)
@@ -418,7 +415,7 @@ def do_disable_checks(cmd, args, opts):
     p = OptionParser(usage=trim(do_disable_checks.__doc__))
     p.disable_interspersed_args()
     p.add_option('-r', '--recursive', dest='recursive', action='store_true',
-        help='Disable for all services on the given host')
+                 help='Disable for all services on the given host')
     p.set_defaults(recursive=False, author=None, comment=None)
 
     selargs = consume_host_service(args)
@@ -467,7 +464,7 @@ def do_enable_checks(cmd, args, opts):
     p = OptionParser(usage=trim(do_enable_checks.__doc__))
     p.disable_interspersed_args()
     p.add_option('-r', '--recursive', dest='recursive', action='store_true',
-        help='Enable for all services on the given host')
+                 help='Enable for all services on the given host')
     p.set_defaults(recursive=False, author=None, comment=None)
 
     selargs = consume_host_service(args)
@@ -498,42 +495,42 @@ def do_acknowledge_problem(cmd, args, opts):
 
     Available options:
 
-        --comment=TEXT   	Comment on the acknowledged problem.
-        
-        --sticky=TRUE/FALSE  	[defaults to TRUE] If sticky, an acknowledgement hangs around
+        --comment=TEXT      Comment on the acknowledged problem.
+
+        --sticky=TRUE/FALSE     [defaults to TRUE] If sticky, an acknowledgement hangs around
                                 until a host reaches "OK" - otherwise, it goes away on next
                                 state change.
-        
-        --notify=TRUE/FALSE	[defaults to TRUE] If TRUE, sends notification that an 
+
+        --notify=TRUE/FALSE     [defaults to TRUE] If TRUE, sends notification that an
                                 acknowledgement has occurred.
-        
-        --persistent=TRUE/FALSE	[defaults to FALSE] If TRUE, the comment will remain after the
+
+        --persistent=TRUE/FALSE [defaults to FALSE] If TRUE, the comment will remain after the
                                 host returns to "OK" state.
-        
-        --author=STR		[defaults to "nagios-api"] Who is doing the acknowledging.
+
+        --author=STR            [defaults to "nagios-api"] Who is doing the acknowledging.
 
     Example:
 
         %prog acknowledge-problem web01 --comment="Critical Failure"
             # acknowledge problem for web01 with comment "Critical Failure"
 
-        %prog acknowledge-problem web03 "HTTP" --comment="Critical Failure" 
+        %prog acknowledge-problem web03 "HTTP" --comment="Critical Failure"
             # acknowledge problem on HTTP service for web03 with comment "Critical Failure"
 
     '''
     p = OptionParser(usage=trim(do_acknowledge_problem.__doc__))
     p.disable_interspersed_args()
     p.add_option('-c', '--comment', dest='comment', action='store',
-        help="Comment on the acknowledged problem.")
+                 help="Comment on the acknowledged problem.")
     p.add_option('-s', '--sticky', dest='sticky', action='store_false',
-        help='Does acknowledgement hang around until "OK" reached by host?')
+                 help='Does acknowledgement hang around until "OK" reached by host?')
     p.add_option('-n', '--notify', dest='notify', action='store_false',
-        help='Should we send a notification of the acknowledgment?')
+                 help='Should we send a notification of the acknowledgment?')
     p.add_option('-p', '--persistent', dest='persistent', action='store_true',
-        help='Should the comment hang around after the problem expires?')
+                 help='Should the comment hang around after the problem expires?')
     p.add_option('-a', '--author', dest='author', action='store',
-        help='Name appearing for who does the acknowledgment.')
-    p.set_defaults(sticky=True,notify=True,persistent=False,author=None)
+                 help='Name appearing for who does the acknowledgment.')
+    p.set_defaults(sticky=True, notify=True, persistent=False, author=None)
 
     selargs = consume_host_service(args)
     if selargs is None:
@@ -567,7 +564,6 @@ def do_hosts(cmd, args, opts):
     '''Return a plain list of all hosts.
 
     '''
-    global NAGIOS
     for host in NAGIOS:
         print(host)
     return 0
@@ -580,7 +576,6 @@ def do_services(cmd, args, opts):
 
     Specify the host you wish to view the services of.
     '''
-    global NAGIOS
     p = OptionParser(usage=trim(do_services.__doc__))
     if len(args) <= 0 or args[0] not in NAGIOS:
         p.error('First argument must be a valid hostname')
@@ -663,17 +658,17 @@ def main(argv):
     p = OptionParser(usage=trim(__doc__))
     p.disable_interspersed_args()
     p.add_option('-H', '--host', dest='host', default='localhost',
-        help='Host to connect to', metavar='HOST')
+                 help='Host to connect to', metavar='HOST')
     p.add_option('-p', '--port', dest='port', type='int', default=6315,
-        help='Port to connect to', metavar='PORT')
+                 help='Port to connect to', metavar='PORT')
     p.add_option('-U', '--user', dest='user',
-        help='User to connect with', metavar='USER')
+                 help='User to connect with', metavar='USER')
     p.add_option('-P', '--password', dest='password',
-        help='Password to connect with', metavar='PASSWORD')
+                 help='Password to connect with', metavar='PASSWORD')
     p.add_option('-u', '--url', dest='url',
-        help='URL to use instead of host:port', metavar='URL')
+                 help='URL to use instead of host:port', metavar='URL')
     p.add_option('--raw', dest='raw', action='store_true',
-        help='Enable raw mode for the CLI')
+                 help='Enable raw mode for the CLI')
     (opts, args) = p.parse_args(argv[1:])
     if opts.url:
         URL = opts.url

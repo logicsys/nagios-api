@@ -3,6 +3,9 @@
 # Nagios class.
 #
 
-version = "1.2.2"
+from .core import (  # noqa: F401, E402
+    Comment, Downtime, Host, HostOrService, Info,
+    Nagios, NagiosObject, Program, Service,
+)
 
-from .core import *
+version = "1.2.2"
