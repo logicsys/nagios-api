@@ -1,3 +1,2 @@
-diesel==3.0.24
+flask>=2.0
 requests>=2.20
-werkzeug>=2.0

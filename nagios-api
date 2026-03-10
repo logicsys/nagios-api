@@ -15,27 +15,27 @@ contributors. See the LICENSE file for full licensing information.
 '''
 
 
-import datetime
+import logging
 import os
 import re
 import sys
+import threading
 import time
-import types
 import atexit
 from urllib.parse import unquote
 import pwd
 import grp
 from gzip import GzipFile
-from io import StringIO
+from io import BytesIO
 from optparse import OptionParser
-from diesel import Application, Loop, Service, sleep
-from diesel.logmod import log, levels
-from diesel.util.lock import synchronized
-from diesel.protocols import http
 from json import dumps
+from flask import Flask, Response, request as flask_request
 from nagios import Comment, Downtime, Nagios
 from werkzeug.exceptions import BadRequest
 from signal import signal, SIGTERM
+
+log = logging.getLogger('nagios-api')
+CMD_LOCK = threading.Lock()
 
 CMDFILE = None
 CMD_ENABLED = False
@@ -63,12 +63,12 @@ def _send_json(req, success, content):
         headers['Access-Control-Allow-Origin'] = ALLOW_ORIGIN
     if 'gzip' in req.headers.get('Accept-Encoding', ''):
         headers['Content-Encoding'] = 'gzip'
-        strout = StringIO()
-        f = GzipFile(fileobj=strout, mode='w')
-        f.write(out)
+        buf = BytesIO()
+        f = GzipFile(fileobj=buf, mode='wb')
+        f.write(out.encode('utf-8') if isinstance(out, str) else out)
         f.close()
-        out = strout.getvalue()
-    return http.Response(out, 200, headers)
+        out = buf.getvalue()
+    return Response(out, status=200, headers=headers)
 
 
 def json_error(req, msg):
@@ -163,11 +163,11 @@ def http_host(req, objid, reqobj):
     host_keys = [ x for x in dir(NAGIOS.hosts[objid]) if not x.startswith('__') ]
     for host_key in host_keys:
         value = getattr(NAGIOS.hosts[objid], host_key)
-        if type(value) == types.StringType:
+        if type(value) == str:
             ret[host_key] = value
         # return comment and downtime data too, if either exists
         elif type(value) == dict:
-            for k, v in value.iteritems():
+            for k, v in value.items():
                 if isinstance( v, Comment ):
                     ret['comment'].append( v.for_json() )
                 elif isinstance( v, Downtime ):
@@ -222,7 +222,7 @@ def http_update_host(req, objid, reqobj):
         os.remove(file_path)
 
     try:
-        f = file(file_path, 'w')
+        f = open(file_path, 'w')
         f.write(text)
         f.close()
 
@@ -261,7 +261,7 @@ def http_service(req, objid, reqobj):
         service_keys = [ x for x in dir(NAGIOS.services[objid][service]) if not x.startswith('__') ]
         for service_key in service_keys:
             value = getattr(NAGIOS.services[objid][service], service_key)
-            if type(value) == types.StringType:
+            if type(value) == str:
                 ret[service][service_key] = value
     return json_response(req, ret)
 
@@ -516,7 +516,7 @@ def http_cancel_downtime(req, objid, reqobj):
         if obj is None:
             return json_error(req, 'Failed to get host or service for downtime.')
         if obj.service is None and services_too:
-            for svc in obj.services.itervalues():
+            for svc in obj.services.values():
                 dts += svc.downtimes.values()
         dts += obj.downtimes.values()
 
@@ -1008,19 +1008,18 @@ def send_nagios_command(*args):
     if len(args) < 1:
         log.error('Not enough parameters to send command')
         return False
-    arg = '[%d] ' % int(time.time()) + ';'.join(unicode(j) for j in args)
-    arg = arg.encode('utf-8')
-    with synchronized():
+    arg = '[%d] ' % int(time.time()) + ';'.join(str(j) for j in args)
+    arg_bytes = (arg + '\n').encode('utf-8')
+    with CMD_LOCK:
         log.info('Sending command: %s' % arg)
         try:
           fd = os.open(CMDFILE, os.O_WRONLY)
-          os.write(fd, arg + '\n')
+          os.write(fd, arg_bytes)
           os.close(fd)
         except Exception as e:
           log.error(e)
           return False
         return True
-    return True
 
 
 def read_status(statusfile):
@@ -1033,7 +1032,7 @@ def read_status(statusfile):
     while True:
         if not os.path.isfile(statusfile):
             NAGIOS = Nagios(None)
-            sleep(5)
+            time.sleep(5)
             continue
 
         stat = os.stat(statusfile)
@@ -1044,7 +1043,7 @@ def read_status(statusfile):
                 print("You appear to have handed me a malformed status file - possibly the state retention file. Please check your arguments and try again.")
                 sys.exit(-1)
             mtime = stat.st_mtime
-        sleep(1)
+        time.sleep(1)
 
 
 def read_log(logfile):
@@ -1060,7 +1059,7 @@ def read_log(logfile):
         loc = f.tell()
         line = f.readline()
         if not line:
-            sleep(1)
+            time.sleep(1)
             f.seek(loc)
             cts += 1 # Handle log rollovers by watching for no activity.
             if cts >= 60:
@@ -1082,7 +1081,7 @@ def write_pid():
         sys.exit(1)
     else:
         try:
-            file(PID_FILE, 'w').write(str(os.getpid()))
+            open(PID_FILE, 'w').write(str(os.getpid()))
         except Exception as e:
             sys.stderr.write("%s\n" % e)
             sys.stderr.write("Unable to write pid file: %s\n" % PID_FILE)
@@ -1093,7 +1092,6 @@ def main(argv):
 
     '''
     global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, USRW
-    app = Application()
 
     usrw = None
     
@@ -1135,7 +1133,9 @@ def main(argv):
         parser.error('Port must be in the range 1..65535.')
 
     if options.quiet:
-        log.min_level = levels.WARNING
+        logging.basicConfig(level=logging.WARNING)
+    else:
+        logging.basicConfig(level=logging.INFO)
 
     
 
@@ -1149,15 +1149,40 @@ def main(argv):
     PID_FILE = options.pid_file
     write_pid()
 
-    log.info('Listening on port %d, starting to rock and roll!' % options.port)
-    app.add_service(Service(http.HttpServer(http_handler), options.port,
-            options.bind_addr))
-    app.add_loop(Loop(read_status, options.statusfile), keep_alive=True)
+    flask_app = Flask(__name__)
+
+    @flask_app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
+    @flask_app.route('/<path:path>', methods=['GET', 'POST'])
+    def catch_all(path):
+        return http_handler(flask_request)
+
+    status_thread = threading.Thread(
+        target=_loop_forever, args=(read_status, options.statusfile),
+        daemon=True)
+    status_thread.start()
+
     if os.path.isfile(options.logfile):
         LOG_ENABLED = True
-        app.add_loop(Loop(read_log, options.logfile), keep_alive=True)
-    app.run()
+        log_thread = threading.Thread(
+            target=_loop_forever, args=(read_log, options.logfile),
+            daemon=True)
+        log_thread.start()
+
+    log.info('Listening on port %d, starting to rock and roll!' % options.port)
+    flask_app.run(host=options.bind_addr or '0.0.0.0', port=options.port)
     return 1
+
+
+def _loop_forever(func, *args):
+    '''Run a function in a loop, restarting on exception (mimics diesel keep_alive).'''
+    while True:
+        try:
+            func(*args)
+        except SystemExit:
+            raise
+        except Exception:
+            log.exception('Background loop %s crashed, restarting' % func.__name__)
+            time.sleep(1)
 
 
 def _exitfunc(*args):

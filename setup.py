@@ -12,8 +12,7 @@ setup(name='nagios-api',
       packages=['nagios'],
       scripts=['nagios-cli', 'nagios-api'],
       install_requires=[
-        'diesel>=3.0',
+        'flask>=2.0',
         'requests>=2.20',
-        'werkzeug>=2.0',
       ]
      )

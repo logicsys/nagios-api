@@ -5,6 +5,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libffi-dev libssl-dev gcc libc6-dev && \
     rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
 RUN pip install --no-cache-dir \
     flake8 \
     pytest \
@@ -13,10 +15,7 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /app
 COPY requirements.txt .
-# Install each dependency individually so a failure in one (e.g. diesel's
-# native dep http-parser) doesn't block the others from installing.
-RUN cat requirements.txt | grep -v '^\s*#' | grep -v '^\s*$' | \
-    while read -r pkg; do pip install --no-cache-dir "$pkg" || true; done
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 # Install the package itself so imports resolve

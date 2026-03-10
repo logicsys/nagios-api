@@ -1,20 +1,19 @@
-FROM ubuntu:16.04
-MAINTAINER Rogier Slag <rogier@inventid.nl>
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim
 
 EXPOSE 8080
-# The following files can be mapped into the container for usages towards Nagios
-# However setting these as a volume causes Docker to create directories for them
-# VOLUME ["/opt/status.dat", "/opt/nagios.cmd", "/opt/nagios.log"]
 
 RUN apt-get update && \
-    apt-get install python-virtualenv libffi-dev python-dev python-pip python-setuptools openssl libssl-dev -y
-RUN cd /opt && \
-    virtualenv env && \
-    /opt/env/bin/pip install diesel && \
-    /opt/env/bin/pip install requests
+    apt-get install -y --no-install-recommends libffi-dev libssl-dev gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN mkdir /opt/nagios-api
-COPY . /opt/nagios-api
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-CMD ["/opt/env/bin/python", "/opt/nagios-api/nagios-api", "-p", "8080", "-s", "/opt/status.dat", "-c", "/opt/nagios.cmd", "-l", "/opt/nagios.log", "-q"]
+WORKDIR /opt/nagios-api
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
+COPY . .
+RUN pip install --no-cache-dir --no-deps .
+
+CMD ["python", "/opt/nagios-api/nagios-api", "-p", "8080", "-s", "/opt/status.dat", "-c", "/opt/nagios.cmd", "-l", "/opt/nagios.log", "-q"]
