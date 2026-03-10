@@ -14,23 +14,42 @@ for interfacing with the API.
 ## Dependencies
 Dependencies include:
 
-- diesel
-- greenlet
-- python-openssl
+- flask
+- requests
 
-These should be available via pip/easy_install.
+Install via pip:
+
+```
+pip install -r requirements.txt
+```
+
+Or install the package directly:
+
+```
+pip install .
+```
 
 ## Usage
 Usage is pretty easy:
 
 ```
-nagios-api -p 8080 -c /var/lib/nagios3/rw/nagios.cmd\
--s /var/cache/nagios3/status.dat -l /var/log/nagios3/nagios.log
+nagios-api -p 8080 -c /var/lib/nagios3/rw/nagios.cmd \
+  -s /var/cache/nagios3/status.dat -l /var/log/nagios3/nagios.log
 ```
 
 You must at least provide the status file options. If you don't provide
 the other options, then we will disable that functionality and error to
 clients who request it.
+
+## Build, Lint & Test
+
+All run in temporary Docker containers to avoid polluting the host:
+
+```
+scripts/build.sh    # Build dev image, verify package imports
+scripts/lint.sh     # Run flake8 (auto-builds image if needed)
+scripts/test.sh     # Run pytest on tests/ (auto-builds image if needed)
+```
 
 ## Using the API
 The server speaks [JSON](http://www.json.org/). You can either GET data from it or POST data to
@@ -51,13 +70,13 @@ This POSTs the given JSON object to the `schedule_downtime` method. You
 will note that all objects returned follow a predictable format:
 
 ```
-{"content": <object>, "result": <bool>}
+{"content": <object>, "success": <bool>}
 ```
 
-The `result` field is always `true` or `false`, allowing you to
+The `success` field is always `true` or `false`, allowing you to
 determine at a glance if the command succeeded. The `content` field may
-be any valid JavaScript object: an int, string, null, bool, hash, list,
-etc etc. What is returned depends on the method being called.
+be any valid JSON value: an int, string, null, bool, object, array,
+etc. What is returned depends on the method being called.
 
 ## Using `nagios-cli`
 Once your API server is up and running you can access it through the
@@ -78,7 +97,7 @@ Below are the options taken on the CLI.
 -p, --port=PORT
 ```
 
-Listen on port 'PORT' for HTTP requests.
+Listen on port 'PORT' for HTTP requests (default: 6315).
 
 ```
 -b, --bind=ADDR
@@ -126,7 +145,7 @@ JavaScript/HTML on one host and have it access an endpoint on a
 different service. This requires setting a header on the endpoint,
 which this option allows you to do.
 
-You can simply set this header to ``` and not worry about it
+You can simply set this header to `*` and not worry about it
 if you want to allow all access. For more information see the
 [CORS specification](http://www.w3.org/TR/cors/).
 
@@ -136,6 +155,18 @@ if you want to allow all access. For more information see the
 
 If present, we will only print warning/critical messages. Useful if
 you are running this in the background.
+
+```
+-f, --pid-file=PID_FILE
+```
+
+File to write the process ID to (default: `/var/run/nagios-api.pid`).
+
+```
+-u, --user-suffix-read-write=USRW
+```
+
+Username suffix to allow read-write access.
 
 ## API
 This program currently supports only a subset of the Nagios API. More
@@ -156,7 +187,7 @@ This method allows you to acknowledge a given problem on a host or service.
   "comment": "string",
   "sticky": true,
   "notify": true,
-  "persistent: true,
+  "persistent": true,
   "expire": 0,
   "author": "string"
 }
@@ -213,7 +244,7 @@ include whatever you want and is visible in the Nagios UI and API output.
   "host": "string",
   "service": "string",
   "comment": "string",
-  "persistent: true,
+  "persistent": true,
   "author": "string"
 }
 ```
@@ -409,7 +440,7 @@ you to force a check.
   "host": "string",
   "service": "string",
   "check_time": 1234,
-  "forced: true,
+  "forced": true,
   "output": "string"
 }
 ```
@@ -598,13 +629,12 @@ First determine the location of the `status.dat`, `nagios.log`, and
 container can be started using the following command:
 
 ```
+docker build -t nagios-api .
 docker run -v /var/lib/nagios3/rw/nagios.cmd:/opt/nagios.cmd \
--v /var/cache/nagios3/status.dat:/opt/status.dat \
--v /var/log/nagios3/nagios.log:/opt/nagios.log \
--p 2337:8080 inventid/nagios-python-api
+  -v /var/cache/nagios3/status.dat:/opt/status.dat \
+  -v /var/log/nagios3/nagios.log:/opt/nagios.log \
+  -p 8080:8080 nagios-api
 ```
-
-In the above case, the API will be exposed on port 2337.
 
 ## Author
 Written by Mark Smith <mark@qq.is> while under the employ of Bump
