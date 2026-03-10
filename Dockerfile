@@ -16,4 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN pip install --no-cache-dir --no-deps .
 
+RUN groupadd -r nagiosapi && useradd -r -g nagiosapi -d /opt/nagios-api -s /sbin/nologin nagiosapi
+USER nagiosapi
+
 CMD ["python", "/opt/nagios-api/nagios-api", "-p", "8080", "-b", "0.0.0.0", "-s", "/opt/status.dat", "-c", "/opt/nagios.cmd", "-l", "/opt/nagios.log", "-q"]

@@ -15,6 +15,7 @@ contributors. See the LICENSE file for full licensing information.
 '''
 
 
+import hmac
 import logging
 import os
 import re
@@ -140,6 +141,16 @@ def load_api_keys(filepath):
     return keys
 
 
+def _check_api_key(provided_key):
+    '''Check an API key using constant-time comparison to prevent timing attacks.'''
+    if API_KEYS is None:
+        return False
+    for valid_key in API_KEYS:
+        if hmac.compare_digest(provided_key, valid_key):
+            return True
+    return False
+
+
 def validate_allow_origin(origin_value):
     '''Validate the --allow-origin value.
     Rejects wildcard '*' and requires an origin URL.
@@ -165,7 +176,6 @@ def _send_json(req, success, content):
     global ALLOW_ORIGIN
     out = dumps({ 'success': success, 'content': content }, ensure_ascii=False)
     headers = {
-        'Content-Length': len(out),
         'Content-Type': 'application/json'
     }
     if ALLOW_ORIGIN is not None:
@@ -177,6 +187,7 @@ def _send_json(req, success, content):
         f.write(out.encode('utf-8') if isinstance(out, str) else out)
         f.close()
         out = buf.getvalue()
+    headers['Content-Length'] = len(out)
     return Response(out, status=200, headers=headers)
 
 
@@ -206,10 +217,13 @@ def http_problems(req, objid, reqobj):
     nagios = get_nagios()
     hosts = {}
     for host, host_data in nagios.for_json().items():
-        for service,service_data in host_data['services'].items():
-            if (int(service_data['current_state']) == 0):
-                del host_data['services'][service]
-        if host_data['services']:
+        problem_services = {
+            svc: svc_data
+            for svc, svc_data in host_data['services'].items()
+            if int(svc_data['current_state']) != 0
+        }
+        if problem_services:
+            host_data['services'] = problem_services
             hosts[host] = host_data
     return json_response(req, hosts)
 
@@ -1113,8 +1127,12 @@ def send_nagios_command(*args):
     # The first arg is the command verb (or a pre-validated raw command
     # string that legitimately contains semicolons), so semicolon checks
     # apply only to subsequent arguments.
+    MAX_ARG_LENGTH = 8192
     for i, a in enumerate(args):
         s = str(a)
+        if len(s) > MAX_ARG_LENGTH:
+            log.error('Rejecting command argument exceeding max length')
+            return False
         if '\n' in s or '\r' in s:
             log.error('Rejecting command argument containing newline')
             return False
@@ -1170,7 +1188,7 @@ def read_log(logfile):
 
     '''
     global NLOG, NLOGLINES
-    f = open(logfile, 'r')
+    f = open(logfile, 'r', encoding='utf-8', errors='replace')
     cts = 0
     while True:
         loc = f.tell()
@@ -1180,7 +1198,7 @@ def read_log(logfile):
             f.seek(loc)
             cts += 1  # Handle log rollovers by watching for no activity.
             if cts >= 60:
-                f = open(logfile, 'r')
+                f = open(logfile, 'r', encoding='utf-8', errors='replace')
                 cts = 0
         else:
             with LOG_LOCK:
@@ -1340,7 +1358,7 @@ def main(argv):
             return None
         key = (flask_request.headers.get('X-API-Key')
                or flask_request.args.get('api_key'))
-        if not key or key not in API_KEYS:
+        if not key or not _check_api_key(key):
             log.warning('Rejected unauthenticated request from %s',
                         flask_request.remote_addr)
             return Response(
@@ -1419,10 +1437,11 @@ def _loop_forever(func, *args):
 def _exitfunc(*args):
     global PID_FILE
     if PID_FILE is not None and os.path.isfile(PID_FILE):
-        print("Cleaning up PID.")
-        os.unlink(PID_FILE)
-    print("Exiting.")
-    sys.exit(0)
+        try:
+            os.unlink(PID_FILE)
+        except OSError:
+            pass
+    os._exit(0)
 
 
 if __name__ == '__main__':

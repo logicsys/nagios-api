@@ -728,7 +728,7 @@ def main(argv):
         'services': do_services,
     }
     for cmd in dispatch:
-        if re.match(r'^' + command, cmd):
+        if cmd.startswith(command):
             return dispatch[cmd](command, posargs, otherargs)
     p.error('Command not found, see the usage')
 

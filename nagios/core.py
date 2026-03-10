@@ -63,7 +63,7 @@ class Nagios:
             if cur is not None:
                 yield cur
 
-        f = open(statusfile, 'r')
+        f = open(statusfile, 'r', encoding='utf-8', errors='replace')
         for obj in next_stanza(f):
             host = obj['host_name'] if 'host_name' in obj else None
             service = obj['service_description'] if 'service_description' in obj else None
