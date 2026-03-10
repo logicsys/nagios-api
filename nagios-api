@@ -37,6 +37,8 @@ from waitress import serve
 
 log = logging.getLogger('nagios-api')
 CMD_LOCK = threading.Lock()
+STATE_LOCK = threading.Lock()
+LOG_LOCK = threading.Lock()
 
 CMDFILE = None
 CMD_ENABLED = False
@@ -49,6 +51,7 @@ ALLOW_ORIGIN = None
 PID_FILE = "/var/run/nagios-api.pid"
 CFG_DIRECTORY = "/usr/local/nagios/etc/objects"
 API_KEYS = None
+RATE_LIMITER = None
 CFG_FILENAME_RE = re.compile(r'^[a-zA-Z0-9._-]+\.cfg$')
 
 ALLOWED_NAGIOS_COMMANDS = {
@@ -74,6 +77,52 @@ ALLOWED_NAGIOS_COMMANDS = {
     'SCHEDULE_FORCED_HOST_CHECK', 'SCHEDULE_HOST_CHECK',
     'SCHEDULE_FORCED_HOST_SVC_CHECKS', 'SCHEDULE_HOST_SVC_CHECKS',
 }
+
+
+class RateLimiter:
+    '''In-memory token bucket rate limiter, keyed by client IP.'''
+
+    def __init__(self, rate, burst):
+        self.rate = rate
+        self.burst = burst
+        self.buckets = {}
+        self.lock = threading.Lock()
+
+    def allow(self, key):
+        now = time.time()
+        with self.lock:
+            if key not in self.buckets:
+                self.buckets[key] = (self.burst - 1, now)
+                return True
+            tokens, last = self.buckets[key]
+            elapsed = now - last
+            tokens = min(self.burst, tokens + elapsed * self.rate)
+            if tokens < 1:
+                self.buckets[key] = (tokens, now)
+                return False
+            self.buckets[key] = (tokens - 1, now)
+            return True
+
+    def cleanup(self, max_age=3600):
+        '''Remove stale entries to prevent memory growth.'''
+        now = time.time()
+        with self.lock:
+            stale = [k for k, (_, t) in self.buckets.items()
+                     if now - t > max_age]
+            for k in stale:
+                del self.buckets[k]
+
+
+def get_nagios():
+    '''Return the current NAGIOS state object under lock.'''
+    with STATE_LOCK:
+        return NAGIOS
+
+
+def get_nlog():
+    '''Return a copy of the current log buffer under lock.'''
+    with LOG_LOCK:
+        return list(NLOG)
 
 
 def load_api_keys(filepath):
@@ -151,12 +200,12 @@ def http_problems(req, objid, reqobj):
     view to the nagios "Problems" view.
 
     '''
-    global NAGIOS
     if objid is not None:
         return json_error(req, 'Unexpected object ID.')
 
+    nagios = get_nagios()
     hosts = {}
-    for host, host_data in NAGIOS.for_json().items():
+    for host, host_data in nagios.for_json().items():
         for service,service_data in host_data['services'].items():
             if (int(service_data['current_state']) == 0):
                 del host_data['services'][service]
@@ -174,10 +223,9 @@ def http_state(req, objid, reqobj):
     world.
 
     '''
-    global NAGIOS
     if objid is not None:
         return json_error(req, 'Unexpected object ID.')
-    return json_response(req, NAGIOS.for_json())
+    return json_response(req, get_nagios().for_json())
 
 
 def http_objects(req, objid, reqobj):
@@ -186,56 +234,40 @@ def http_objects(req, objid, reqobj):
     everything that exists in the world.
 
     '''
-    global NAGIOS
     if objid is not None:
         return json_error(req, 'Unexpected object ID.')
+    nagios = get_nagios()
     ret = {}
-    for host in NAGIOS.hosts:
+    for host in nagios.hosts:
         ret[host] = []
-        if host in NAGIOS.services:
-            for svc in NAGIOS.services[host]:
+        if host in nagios.services:
+            for svc in nagios.services[host]:
                 ret[host].append(svc)
     return json_response(req, ret)
 
 
 def http_status(req, objid, reqobj):
-    global NAGIOS
     if objid is not None:
         return json_error(req, 'Unexpected object ID.')
+    nagios = get_nagios()
     ret = {}
-    ret['info'] = NAGIOS.info.for_json()
-    ret['program'] = NAGIOS.program.for_json()
+    ret['info'] = nagios.info.for_json()
+    ret['program'] = nagios.program.for_json()
     return json_response(req, ret)
 
 
 def http_host(req, objid, reqobj):
     '''Get a view of a single host.
-    Shows all of the variables for the host object.
+    Returns allowlisted host attributes, services, comments, and downtimes.
     '''
-    global NAGIOS
+    nagios = get_nagios()
     if not objid:
         return json_error(req, 'No hostname provided.')
-    elif objid not in NAGIOS.hosts.keys():
+    if objid not in nagios.hosts:
         return json_error(req, 'Unknown hostname.')
-    ret = {}
-    ret['comment'] = []
-    ret['downtime'] = []
-    host_keys = [ x for x in dir(NAGIOS.hosts[objid]) if not x.startswith('__') ]
-    for host_key in host_keys:
-        value = getattr(NAGIOS.hosts[objid], host_key)
-        if type(value) == str:
-            ret[host_key] = value
-        # return comment and downtime data too, if either exists
-        elif type(value) == dict:
-            for k, v in value.items():
-                if isinstance( v, Comment ):
-                    ret['comment'].append( v.for_json() )
-                elif isinstance( v, Downtime ):
-                    ret['downtime'].append( v.for_json() )
-    if objid in NAGIOS.services:
-        ret['services'] = []
-        for svc in NAGIOS.services[objid]:
-            ret['services'].append(svc)
+    ret = nagios.hosts[objid].for_json()
+    if objid in nagios.services:
+        ret['services'] = list(nagios.services[objid].keys())
     return json_response(req, ret)
 
 
@@ -267,7 +299,7 @@ def validate_nagios_command(command_str):
     parts = command_str.split(';')
     verb = parts[0].strip()
     if verb not in ALLOWED_NAGIOS_COMMANDS:
-        return False, 'Command "%s" is not allowed.' % verb
+        return False, 'Command is not allowed.'
     for part in parts:
         if '\n' in part or '\r' in part:
             return False, 'Command arguments must not contain newlines.'
@@ -349,21 +381,16 @@ def http_update_host(req, objid, reqobj):
 
 def http_service(req, objid, reqobj):
     '''Get a view of a single service on one host.
-    Shows all of the variables for the host object.
+    Returns allowlisted service attributes, comments, and downtimes.
     '''
-    global NAGIOS
+    nagios = get_nagios()
     if not objid:
         return json_error(req, 'No hostname provided.')
-    elif objid not in NAGIOS.services.keys():
+    if objid not in nagios.services:
         return json_error(req, 'Unknown hostname.')
     ret = {}
-    for service in NAGIOS.services[objid]:
-        ret[service] = {}
-        service_keys = [ x for x in dir(NAGIOS.services[objid][service]) if not x.startswith('__') ]
-        for service_key in service_keys:
-            value = getattr(NAGIOS.services[objid][service], service_key)
-            if type(value) == str:
-                ret[service][service_key] = value
+    for service_name, service_obj in nagios.services[objid].items():
+        ret[service_name] = service_obj.for_json()
     return json_response(req, ret)
 
 
@@ -373,12 +400,11 @@ def http_log(req, objid, reqobj):
     you want to be notified when new log lines are added.
 
     '''
-    global NLOG, LOG_ENABLED
     if objid is not None:
         return json_error(req, 'Unexpected object ID.')
     if not LOG_ENABLED:
         return json_error(req, 'Log file parsing is not enabled on nagios-api.')
-    return json_response(req, NLOG)
+    return json_response(req, get_nlog())
 
 
 def http_disable_notifications(req, objid, reqobj):
@@ -388,7 +414,6 @@ def http_disable_notifications(req, objid, reqobj):
     true, we will act on the host and all of the services on it.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
     if objid is not None:
@@ -398,11 +423,11 @@ def http_disable_notifications(req, objid, reqobj):
     service = reqobj.get('service')
     services_too = reqobj.get('services_too', False)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Host or service not found.')
 
-    now = int(time.time())
     if obj.service is not None:
         if not send_nagios_command('DISABLE_SVC_NOTIFICATIONS', host, service):
             return json_error(req, 'Failed sending command to Nagios.')
@@ -422,7 +447,6 @@ def http_enable_notifications(req, objid, reqobj):
     true, we will act on the host and all of the services on it.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
     if objid is not None:
@@ -432,11 +456,11 @@ def http_enable_notifications(req, objid, reqobj):
     service = reqobj.get('service')
     services_too = reqobj.get('services_too', False)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Host or service not found.')
 
-    now = int(time.time())
     if obj.service is not None:
         if not send_nagios_command('ENABLE_SVC_NOTIFICATIONS', host, service):
             return json_error(req, 'Failed sending command to Nagios.')
@@ -455,7 +479,6 @@ def http_disable_checks(req, objid, reqobj):
     true, we will act on the host and all of the services on it.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
     if objid is not None:
@@ -465,11 +488,11 @@ def http_disable_checks(req, objid, reqobj):
     service = reqobj.get('service')
     services_too = reqobj.get('services_too', False)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Host or service not found.')
 
-    now = int(time.time())
     if obj.service is not None:
         if not send_nagios_command('DISABLE_SVC_CHECK', host, service):
             return json_error(req, 'Failed sending command to Nagios.')
@@ -489,7 +512,6 @@ def http_enable_checks(req, objid, reqobj):
     true, we will act on the host and all of the services on it.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
     if objid is not None:
@@ -499,11 +521,11 @@ def http_enable_checks(req, objid, reqobj):
     service = reqobj.get('service')
     services_too = reqobj.get('services_too', False)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Host or service not found.')
 
-    now = int(time.time())
     if obj.service is not None:
         if not send_nagios_command('ENABLE_SVC_CHECK', host, service):
             return json_error(req, 'Failed sending command to Nagios.')
@@ -525,7 +547,6 @@ def http_schedule_downtime(req, objid, reqobj):
     true, we will schedule downtime for the host and the services on it.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
     if objid is not None:
@@ -541,14 +562,14 @@ def http_schedule_downtime(req, objid, reqobj):
     start_time = reqobj.get('start_time', now)
     fixed = reqobj.get('fixed', 1)
 
-
     try:
         dur = int(reqobj.get('duration', 0))
     except ValueError:
         dur = 0
     end_time = reqobj.get('end_time', start_time + dur)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Host or service not found.')
     if fixed == 1:
@@ -580,7 +601,6 @@ def http_cancel_downtime(req, objid, reqobj):
     to cancel any matching downtimes.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
@@ -590,16 +610,17 @@ def http_cancel_downtime(req, objid, reqobj):
         else:
             return send_nagios_command('DEL_HOST_DOWNTIME', dt.downtime_id)
 
+    nagios = get_nagios()
     dts = []
     if objid is not None:
-        if objid not in NAGIOS.downtimes:
+        if objid not in nagios.downtimes:
             return json_error(req, 'Downtime ID does not seem valid.')
-        dts += [NAGIOS.downtimes[objid]]
+        dts += [nagios.downtimes[objid]]
     else:
         host = reqobj.get('host')
         service = reqobj.get('service')
         services_too = reqobj.get('services_too', False)
-        obj = NAGIOS.host_or_service(host, service)
+        obj = nagios.host_or_service(host, service)
         if obj is None:
             return json_error(req, 'Failed to get host or service for downtime.')
         if obj.service is None and services_too:
@@ -632,7 +653,6 @@ def http_schedule_hostgroup_downtime(req, objid, reqobj):
     true, we will schedule downtime for the all the hosts and the services on it.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
     if objid is not None:
@@ -687,14 +707,14 @@ def http_submit_result(req, objid, reqobj):
     Service status codes: 0 = OK, 1 = WARNING, 2 = CRITICAL, 3 = UNKNOWN.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
     host = reqobj.get('host')
     service = reqobj.get('service')
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
 
@@ -753,7 +773,6 @@ def http_acknowledge_problem(req, objid, reqobj):
     acknowledgement. This will default to 'nagios-api'.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
@@ -766,7 +785,8 @@ def http_acknowledge_problem(req, objid, reqobj):
     persistent = reqobj.get('persistent', 0)
     expire = reqobj.get('expire', 0)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
 
@@ -812,14 +832,14 @@ def http_remove_acknowledgement(req, objid, reqobj):
     acknowledged.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
     host = reqobj.get('host')
     service = reqobj.get('service')
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
 
@@ -851,7 +871,6 @@ def http_add_comment(req, objid, reqobj):
     comment. This will default to 'nagios-api'.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
@@ -861,7 +880,8 @@ def http_add_comment(req, objid, reqobj):
     comment = reqobj.get('comment')
     author = reqobj.get('author', 'nagios-api')
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
 
@@ -895,7 +915,6 @@ def http_delete_comment(req, objid, reqobj):
     will be deleted.
 
     '''
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
@@ -903,7 +922,8 @@ def http_delete_comment(req, objid, reqobj):
     service = reqobj.get('service')
     comment_id = reqobj.get('comment_id')
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
 
@@ -961,7 +981,6 @@ def http_schedule_check(req, objid, reqobj):
 
     '''
     from time import time
-    global NAGIOS, CMD_ENABLED
     if not CMD_ENABLED:
         return json_error(req, 'External commands not enabled on nagios-api.')
 
@@ -971,7 +990,8 @@ def http_schedule_check(req, objid, reqobj):
     forced = reqobj.get('forced', 0)
     all_services = reqobj.get('all_services', 0)
 
-    obj = NAGIOS.host_or_service(host, service)
+    nagios = get_nagios()
+    obj = nagios.host_or_service(host, service)
     if obj is None:
         return json_error(req, 'Failed to find host or service to update.')
 
@@ -1073,9 +1093,9 @@ def http_handler(req):
     }
 
     if req.method not in dispatch:
-        return json_error(req, 'Method %s not supported' % req.method)
+        return json_error(req, 'Method not supported.')
     if verb not in dispatch[req.method]:
-        return json_error(req, 'Verb %s (method %s) not supported' % (verb, req.method))
+        return json_error(req, 'Unknown endpoint.')
     return dispatch[req.method][verb](req, objid, reqobj)
 
 
@@ -1119,17 +1139,21 @@ def read_status(statusfile):
     mtime = None
     while True:
         if not os.path.isfile(statusfile):
-            NAGIOS = Nagios(None)
+            with STATE_LOCK:
+                NAGIOS = Nagios(None)
             time.sleep(5)
             continue
 
         stat = os.stat(statusfile)
         if mtime is None or stat.st_mtime > mtime:
             try:
-               NAGIOS = Nagios(statusfile)
-            except ValueError as e:
-                print("You appear to have handed me a malformed status file - possibly the state retention file. Please check your arguments and try again.")
+                new_state = Nagios(statusfile)
+            except ValueError:
+                log.error('Malformed status file (possibly the state '
+                          'retention file). Check your arguments.')
                 sys.exit(-1)
+            with STATE_LOCK:
+                NAGIOS = new_state
             mtime = stat.st_mtime
         time.sleep(1)
 
@@ -1149,37 +1173,39 @@ def read_log(logfile):
         if not line:
             time.sleep(1)
             f.seek(loc)
-            cts += 1 # Handle log rollovers by watching for no activity.
+            cts += 1  # Handle log rollovers by watching for no activity.
             if cts >= 60:
                 f = open(logfile, 'r')
                 cts = 0
         else:
-            NLOGLINES += 1
-            NLOG.append(line.strip())
-            NLOG = NLOG[-1000:]  # Keep the most recent 1k lines.
-    f.close()  # Useless?
+            with LOG_LOCK:
+                NLOGLINES += 1
+                NLOG.append(line.strip())
+                NLOG = NLOG[-1000:]
+    f.close()
 
 def write_pid():
-    '''Write pid file
+    '''Write pid file atomically using O_CREAT|O_EXCL to prevent races.
 
     '''
     global PID_FILE
-    if os.path.isfile(PID_FILE):
+    try:
+        fd = os.open(PID_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.write(fd, str(os.getpid()).encode('utf-8'))
+        os.close(fd)
+    except FileExistsError:
         sys.stderr.write("%s already exists, exiting\n" % PID_FILE)
         sys.exit(1)
-    else:
-        try:
-            open(PID_FILE, 'w').write(str(os.getpid()))
-        except Exception as e:
-            sys.stderr.write("%s\n" % e)
-            sys.stderr.write("Unable to write pid file: %s\n" % PID_FILE)
-            sys.exit(1)
+    except Exception as e:
+        sys.stderr.write("%s\n" % e)
+        sys.stderr.write("Unable to write pid file: %s\n" % PID_FILE)
+        sys.exit(1)
 
 def main(argv):
     '''A simple REST API for Nagios3.
 
     '''
-    global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, API_KEYS
+    global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, API_KEYS, RATE_LIMITER
 
     parser = OptionParser(description='Give Nagios a REST API.')
     parser.add_option('-o', '--allow-origin', dest='alloworigin', metavar='ORIGIN',
@@ -1217,11 +1243,30 @@ def main(argv):
             help='File containing API keys (one per line). '
             'When provided, all requests must include a valid key via '
             'X-API-Key header or api_key query parameter.')
+    parser.add_option('--rate-limit', dest='rate_limit', type='float',
+            default=0, metavar='RPS',
+            help='Max requests per second per IP (0 = unlimited). Default: 0')
+    parser.add_option('--rate-limit-burst', dest='rate_burst', type='int',
+            default=20, metavar='N',
+            help='Burst size for rate limiter. Default: 20')
+    parser.add_option('--tls-cert', dest='tls_cert', metavar='FILE',
+            help='Path to TLS certificate file (PEM). Enables HTTPS.')
+    parser.add_option('--tls-key', dest='tls_key', metavar='FILE',
+            help='Path to TLS private key file (PEM). Required with --tls-cert.')
     (options, args) = parser.parse_args(args=argv[1:])
 
     if options.apikeyfile is not None:
         API_KEYS = load_api_keys(options.apikeyfile)
         log.info('Loaded %d API key(s) from %s', len(API_KEYS), options.apikeyfile)
+
+    if options.tls_cert and not options.tls_key:
+        parser.error('--tls-key is required when using --tls-cert')
+    if options.tls_key and not options.tls_cert:
+        parser.error('--tls-cert is required when using --tls-key')
+    if options.tls_cert and not os.path.isfile(options.tls_cert):
+        parser.error('TLS certificate file not found: %s' % options.tls_cert)
+    if options.tls_key and not os.path.isfile(options.tls_key):
+        parser.error('TLS key file not found: %s' % options.tls_key)
 
     if not os.path.isfile(options.statusfile):
         parser.error('Status file not found: %s' % options.statusfile)
@@ -1254,7 +1299,29 @@ def main(argv):
     PID_FILE = options.pid_file
     write_pid()
 
+    if API_KEYS and not options.tls_cert:
+        log.warning('API key authentication is enabled but TLS is not. '
+                    'API keys will be transmitted in cleartext. '
+                    'Consider using --tls-cert/--tls-key or a TLS-terminating proxy.')
+
+    if options.rate_limit > 0:
+        RATE_LIMITER = RateLimiter(options.rate_limit, options.rate_burst)
+        log.info('Rate limiting enabled: %.1f req/s per IP, burst %d',
+                 options.rate_limit, options.rate_burst)
+
     flask_app = Flask(__name__)
+
+    @flask_app.before_request
+    def check_rate_limit():
+        if RATE_LIMITER is None:
+            return None
+        client_ip = flask_request.remote_addr
+        if not RATE_LIMITER.allow(client_ip):
+            return Response(
+                dumps({'success': False, 'content': 'Rate limit exceeded'}),
+                status=429,
+                content_type='application/json'
+            )
 
     @flask_app.before_request
     def check_auth():
@@ -1288,6 +1355,14 @@ def main(argv):
             daemon=True)
         log_thread.start()
 
+    if RATE_LIMITER is not None:
+        def _rate_cleanup():
+            while True:
+                time.sleep(300)
+                RATE_LIMITER.cleanup()
+        cleanup_thread = threading.Thread(target=_rate_cleanup, daemon=True)
+        cleanup_thread.start()
+
     if options.bind_addr == '0.0.0.0':
         log.warning('Binding to 0.0.0.0 -- API is exposed on ALL network interfaces')
 
@@ -1295,10 +1370,26 @@ def main(argv):
              options.bind_addr, options.port)
     if options.dev:
         log.warning('Running with Flask development server -- not for production use')
-        flask_app.run(host=options.bind_addr, port=options.port)
+        ssl_ctx = None
+        if options.tls_cert:
+            ssl_ctx = (options.tls_cert, options.tls_key)
+        flask_app.run(host=options.bind_addr, port=options.port,
+                      ssl_context=ssl_ctx)
     else:
-        serve(flask_app, host=options.bind_addr, port=options.port,
-              _quiet=options.quiet)
+        if options.tls_cert:
+            import ssl
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_ctx.load_cert_chain(options.tls_cert, options.tls_key)
+            from waitress import create_server
+            server = create_server(flask_app, host=options.bind_addr,
+                                   port=options.port, _quiet=options.quiet)
+            server.socket = ssl_ctx.wrap_socket(
+                server.socket, server_side=True)
+            log.info('TLS enabled')
+            server.run()
+        else:
+            serve(flask_app, host=options.bind_addr, port=options.port,
+                  _quiet=options.quiet)
     return 1
 
 

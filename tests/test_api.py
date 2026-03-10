@@ -38,7 +38,7 @@ class TestValidateNagiosCommand:
     def test_disallowed_command(self, api_module):
         ok, err = api_module.validate_nagios_command('SHUTDOWN_PROGRAM')
         assert ok is False
-        assert 'not allowed' in err
+        assert 'not allowed' in err.lower()
 
     def test_empty_command(self, api_module):
         ok, err = api_module.validate_nagios_command('')
@@ -301,3 +301,142 @@ class TestRestartMethod:
         # The handler runs but command is disabled
         assert data['success'] is False
         assert 'Restart failed' in data['content']
+
+
+# --- Thread safety accessors ---
+
+class TestThreadSafeAccessors:
+    def test_get_nagios_returns_current_state(self, api_module):
+        from nagios import Nagios
+        api_module.NAGIOS = Nagios(STATUS_FILE)
+        result = api_module.get_nagios()
+        assert result is api_module.NAGIOS
+        assert 'web01' in result.hosts
+
+    def test_get_nlog_returns_copy(self, api_module):
+        api_module.NLOG = ['line1', 'line2']
+        result = api_module.get_nlog()
+        assert result == ['line1', 'line2']
+        # Mutating the copy should not affect the global
+        result.append('line3')
+        assert len(api_module.NLOG) == 2
+
+
+# --- Information disclosure fix ---
+
+class TestInfoDisclosure:
+    @pytest.fixture
+    def app(self, api_module):
+        """Flask test client for info disclosure tests."""
+        api_module.API_KEYS = None
+        api_module.RATE_LIMITER = None
+        from nagios import Nagios
+        api_module.NAGIOS = Nagios(STATUS_FILE)
+
+        flask_app = api_module.Flask(__name__)
+
+        @flask_app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
+        @flask_app.route('/<path:path>', methods=['GET', 'POST'])
+        def catch_all(path):
+            return api_module.http_handler(api_module.flask_request)
+
+        flask_app.config['TESTING'] = True
+        return flask_app.test_client()
+
+    def test_host_endpoint_uses_allowlist(self, app):
+        resp = app.get('/host/web01')
+        data = resp.get_json()
+        assert data['success'] is True
+        content = data['content']
+        # Should have allowlisted keys
+        assert 'current_state' in content
+        assert 'plugin_output' in content
+        # Should NOT have internal attributes
+        assert 'type' not in content
+        assert 'essential_keys' not in content
+        assert 'attach_service' not in content
+        assert 'attach_comment' not in content
+
+    def test_host_endpoint_includes_services_list(self, app):
+        resp = app.get('/host/web01')
+        data = resp.get_json()
+        content = data['content']
+        assert 'services' in content
+        assert 'HTTP' in content['services']
+
+    def test_service_endpoint_uses_allowlist(self, app):
+        resp = app.get('/service/web01')
+        data = resp.get_json()
+        assert data['success'] is True
+        content = data['content']
+        assert 'HTTP' in content
+        http = content['HTTP']
+        assert 'current_state' in http
+        assert 'type' not in http
+        assert 'essential_keys' not in http
+
+    def test_error_does_not_echo_verb(self, app):
+        resp = app.get('/nonexistent_verb_xyz')
+        data = resp.get_json()
+        assert data['success'] is False
+        assert 'nonexistent_verb_xyz' not in data['content']
+
+
+# --- PID file race condition ---
+
+class TestWritePid:
+    def test_creates_pid_file(self, api_module):
+        tmpdir = tempfile.mkdtemp()
+        pid_path = os.path.join(tmpdir, 'test.pid')
+        api_module.PID_FILE = pid_path
+        try:
+            api_module.write_pid()
+            assert os.path.isfile(pid_path)
+            with open(pid_path) as f:
+                assert f.read() == str(os.getpid())
+        finally:
+            os.unlink(pid_path)
+            os.rmdir(tmpdir)
+
+    def test_exits_if_pid_exists(self, api_module):
+        tmpdir = tempfile.mkdtemp()
+        pid_path = os.path.join(tmpdir, 'test.pid')
+        # Pre-create the file
+        with open(pid_path, 'w') as f:
+            f.write('99999')
+        api_module.PID_FILE = pid_path
+        try:
+            with pytest.raises(SystemExit):
+                api_module.write_pid()
+        finally:
+            os.unlink(pid_path)
+            os.rmdir(tmpdir)
+
+
+# --- Rate limiter ---
+
+class TestRateLimiter:
+    def test_allows_up_to_burst(self, api_module):
+        rl = api_module.RateLimiter(rate=1, burst=3)
+        assert rl.allow('client1') is True
+        assert rl.allow('client1') is True
+        assert rl.allow('client1') is True
+        # Burst exhausted
+        assert rl.allow('client1') is False
+
+    def test_different_keys_independent(self, api_module):
+        rl = api_module.RateLimiter(rate=1, burst=1)
+        assert rl.allow('client1') is True
+        assert rl.allow('client2') is True
+        assert rl.allow('client1') is False
+        assert rl.allow('client2') is False
+
+    def test_cleanup_removes_stale(self, api_module):
+        rl = api_module.RateLimiter(rate=1, burst=5)
+        rl.allow('old_client')
+        # Manually backdate the entry
+        with rl.lock:
+            tokens, _ = rl.buckets['old_client']
+            rl.buckets['old_client'] = (tokens, 0)  # epoch = very old
+        rl.cleanup(max_age=1)
+        assert 'old_client' not in rl.buckets
