@@ -5,11 +5,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/common.sh
 
-VERSION=$(python3 -c "import nagios; print(nagios.version)" 2>/dev/null || echo "1.2.2")
+VERSION=${1:-${VERSION:?VERSION not set in vars.env}}
+RELEASE=${2:-1}
 OUTDIR="$(pwd)/dist"
 IMAGE_PKG="nagios-api-rpm-builder"
 
-echo "==> Building rpm package for nagios-api ${VERSION} ..."
+echo "==> Building rpm package for nagios-api ${VERSION}-${RELEASE} ..."
 
 mkdir -p "$OUTDIR"
 
@@ -80,6 +81,7 @@ CONF
 fpm -s dir -t rpm \
     -n nagios-api \
     -v ${VERSION} \
+    --iteration ${RELEASE} \
     --architecture noarch \
     --description 'REST-like JSON API for Nagios' \
     --url 'https://github.com/xb95/nagios-api' \
@@ -92,11 +94,11 @@ fpm -s dir -t rpm \
     --config-files /etc/sysconfig/nagios-api \
     --after-install /dev/stdin \
     -C \$STAGING \
-    -p /out/nagios-api-${VERSION}-1.noarch.rpm \
+    -p /out/nagios-api-${VERSION}-${RELEASE}.noarch.rpm \
     . <<'POSTINST'
 #!/bin/sh
 systemctl daemon-reload || true
 POSTINST
 "
 
-echo "==> Package built: $OUTDIR/nagios-api-${VERSION}-1.noarch.rpm"
+echo "==> Package built: $OUTDIR/nagios-api-${VERSION}-${RELEASE}.noarch.rpm"

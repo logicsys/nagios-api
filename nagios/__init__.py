@@ -8,4 +8,6 @@ from .core import (  # noqa: F401, E402
     Nagios, NagiosObject, Program, Service,
 )
 
-version = "1.2.2"
+import os as _os
+
+version = _os.environ.get("VERSION", "1.2.2")

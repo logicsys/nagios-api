@@ -1,8 +1,10 @@
 from distutils.core import setup
-import nagios
+import os
+
+version = os.environ.get("VERSION", "1.2.2")
 
 setup(name='nagios-api',
-      version=nagios.version,
+      version=version,
       description='Control nagios using an API',
       author='Mark Smith',
       author_email='mark@qq.is',

@@ -5,12 +5,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/common.sh
 
-VERSION=$(python3 -c "import nagios; print(nagios.version)" 2>/dev/null || echo "1.2.2")
-ARCH=${ARCH:-amd64}
+VERSION=${1:-${VERSION:?VERSION not set in vars.env}}
+RELEASE=${2:-1}
 OUTDIR="$(pwd)/dist"
 IMAGE_PKG="nagios-api-deb-builder"
 
-echo "==> Building deb package for nagios-api ${VERSION} ..."
+echo "==> Building deb package for nagios-api ${VERSION}-${RELEASE} ..."
 
 mkdir -p "$OUTDIR"
 
@@ -81,6 +81,7 @@ CONF
 fpm -s dir -t deb \
     -n nagios-api \
     -v ${VERSION} \
+    --iteration ${RELEASE} \
     --architecture all \
     --description 'REST-like JSON API for Nagios' \
     --url 'https://github.com/xb95/nagios-api' \
@@ -95,11 +96,11 @@ fpm -s dir -t deb \
     --deb-systemd-auto-start \
     --after-install /dev/stdin \
     -C \$STAGING \
-    -p /out/nagios-api_${VERSION}_all.deb \
+    -p /out/nagios-api_${VERSION}-${RELEASE}_all.deb \
     . <<'POSTINST'
 #!/bin/sh
 systemctl daemon-reload || true
 POSTINST
 "
 
-echo "==> Package built: $OUTDIR/nagios-api_${VERSION}_all.deb"
+echo "==> Package built: $OUTDIR/nagios-api_${VERSION}-${RELEASE}_all.deb"
