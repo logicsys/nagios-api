@@ -16,6 +16,7 @@ Dependencies include:
 
 - flask
 - requests
+- waitress
 
 Install via pip:
 
@@ -103,7 +104,8 @@ Listen on port 'PORT' for HTTP requests (default: 6315).
 -b, --bind=ADDR
 ```
 
-Bind to ADDR for HTTP requests (defaults to all interfaces).
+Bind to ADDR for HTTP requests (defaults to `127.0.0.1`, localhost only).
+Use `-b 0.0.0.0` to listen on all interfaces.
 
 ```
 -c, --command-file=FILE
@@ -139,15 +141,17 @@ allow people to subscribe to it.
 -o, --allow-origin=ORIGIN
 ```
 
-Modern web browsers implement the Cross-Origin Resource Sharing
-specification from W3C. This spec allows you to host your
-JavaScript/HTML on one host and have it access an endpoint on a
-different service. This requires setting a header on the endpoint,
-which this option allows you to do.
+Sets the `Access-Control-Allow-Origin` header for CORS. Must be an
+explicit origin URL (e.g., `https://monitoring.example.com`). Wildcard
+`*` is rejected by default for security reasons. Use
+`--allow-origin-unsafe-wildcard` to explicitly opt-in to wildcard mode.
 
-You can simply set this header to `*` and not worry about it
-if you want to allow all access. For more information see the
-[CORS specification](http://www.w3.org/TR/cors/).
+```
+--allow-origin-unsafe-wildcard
+```
+
+Allow `--allow-origin` to be set to `*`. This is insecure and should
+only be used in development or isolated environments.
 
 ```
 -q, --quiet
@@ -163,10 +167,47 @@ you are running this in the background.
 File to write the process ID to (default: `/var/run/nagios-api.pid`).
 
 ```
--u, --user-suffix-read-write=USRW
+-k, --api-key-file=FILE
 ```
 
-Username suffix to allow read-write access.
+File containing API keys (one per line, `#` comments and blank lines
+ignored). When provided, all requests must include a valid key via the
+`X-API-Key` header or `api_key` query parameter. Without this option,
+no authentication is enforced.
+
+```
+--tls-cert=FILE
+```
+
+Path to TLS certificate file (PEM). Enables HTTPS. Must be used
+together with `--tls-key`.
+
+```
+--tls-key=FILE
+```
+
+Path to TLS private key file (PEM). Required when using `--tls-cert`.
+
+```
+--rate-limit=RPS
+```
+
+Maximum requests per second per client IP (default: 0, unlimited).
+When set, requests exceeding the limit receive a 429 response.
+
+```
+--rate-limit-burst=N
+```
+
+Burst size for the rate limiter (default: 20). Allows short bursts of
+requests up to this count before rate limiting kicks in.
+
+```
+--dev
+```
+
+Use Flask's built-in development server instead of waitress. Not
+recommended for production use.
 
 ## API
 This program currently supports only a subset of the Nagios API. More
@@ -386,7 +427,12 @@ return event objects.
 Simply returns a JSON that contains nagios status objects.
 
 ### `restart_nagios`
-Restarts the nagios service.
+Restarts the nagios service. Requires a POST request (GET is rejected
+for CSRF protection).
+
+```
+curl -d '{}' -H 'Content-Type: application/json' http://localhost:8080/restart_nagios
+```
 
 ### `update_host`
 This method will create/update a nagios configuration file that contains devices.
@@ -401,7 +447,9 @@ This method will create/update a nagios configuration file that contains devices
 #### Fields
 `file_name` = `STRING [required]`
 
-File name for the configuration.
+File name for the configuration. Must end in `.cfg` and contain only
+alphanumeric characters, hyphens, underscores, and dots. Path
+separators are stripped for security.
 
 `text` = `STRING [required]`
 
@@ -635,6 +683,10 @@ docker run -v /var/lib/nagios3/rw/nagios.cmd:/opt/nagios.cmd \
   -v /var/log/nagios3/nagios.log:/opt/nagios.log \
   -p 8080:8080 nagios-api
 ```
+
+Note: The container's default CMD passes `-b 0.0.0.0` to bind on all
+interfaces (required for Docker networking). The default bind address
+outside of Docker is `127.0.0.1` (localhost only).
 
 ## Author
 Written by Mark Smith <mark@qq.is> while under the employ of Bump
