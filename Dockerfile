@@ -4,7 +4,7 @@ FROM python:${PYTHON_VERSION}-slim
 EXPOSE 8080
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libffi-dev libssl-dev gcc libc6-dev && \
+    apt-get install -y --no-install-recommends libffi-dev libssl-dev gcc libc6-dev libxml2-dev libxslt1-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel

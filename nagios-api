@@ -53,6 +53,10 @@ PID_FILE = "/var/run/nagios-api.pid"
 CFG_DIRECTORY = "/usr/local/nagios/etc/objects"
 API_KEYS = None
 RATE_LIMITER = None
+CGI_URL = None
+CGI_USER = None
+CGI_PASS = None
+CGI_VERIFY_SSL = False
 CFG_FILENAME_RE = re.compile(r'^[a-zA-Z0-9._-]+\.cfg$')
 
 ALLOWED_NAGIOS_COMMANDS = {
@@ -412,6 +416,68 @@ def http_log(req, objid, reqobj):
     if not LOG_ENABLED:
         return json_error(req, 'Log file parsing is not enabled on nagios-api.')
     return json_response(req, get_nlog())
+
+
+def http_availability(req, objid, reqobj):
+    '''Fetch availability stats from Nagios avail.cgi for a host or service.
+
+    Requires --nagios-cgi-url to be configured.
+
+    Query parameters:
+        service  - Service description (optional)
+        start    - Start epoch timestamp (default: 24h ago)
+        end      - End epoch timestamp (default: now)
+        period   - Shorthand: 24h, 7d, 30d (overrides start/end)
+    '''
+    if CGI_URL is None:
+        return json_error(
+            req, 'Nagios CGI integration is not configured. '
+            'Use --nagios-cgi-url to enable availability reports.')
+
+    if not objid:
+        return json_error(req, 'No hostname provided.')
+
+    hostname = str(objid)
+    service = flask_request.args.get('service', '')
+
+    now = time.time()
+    period = flask_request.args.get('period')
+    if period:
+        multipliers = {'24h': 86400, '7d': 604800, '30d': 2592000}
+        if period not in multipliers:
+            return json_error(
+                req, 'Invalid period. Use 24h, 7d, or 30d.')
+        start_ts = now - multipliers[period]
+        end_ts = now
+    else:
+        try:
+            start_ts = float(flask_request.args.get('start', now - 86400))
+            end_ts = float(flask_request.args.get('end', now))
+        except (ValueError, TypeError):
+            return json_error(req, 'Invalid start/end timestamp.')
+
+    if start_ts >= end_ts:
+        return json_error(req, 'Start time must be before end time.')
+
+    from nagios.availability import fetch_availability
+    try:
+        result = fetch_availability(
+            CGI_URL, CGI_USER, CGI_PASS,
+            hostname, service, start_ts, end_ts,
+            verify_ssl=CGI_VERIFY_SSL)
+    except Exception as e:
+        log.error('Failed to fetch availability from CGI: %s', e)
+        return json_error(req, 'Failed to fetch availability from Nagios CGI.')
+
+    content = {
+        'host': hostname,
+        'service': service,
+        'start': int(start_ts),
+        'end': int(end_ts),
+        'breakdown': result.get('breakdown', {}),
+        'log': result.get('log', []),
+    }
+    return json_response(req, content)
 
 
 def http_disable_notifications(req, objid, reqobj):
@@ -1087,6 +1153,7 @@ def http_handler(req):
             'problems': http_problems,
             'status': http_status,
             'service': http_service,
+            'availability': http_availability,
             'restart_nagios': http_restart_nagios_get_rejected
         },
         'POST': {
@@ -1236,6 +1303,7 @@ def main(argv):
 
     '''
     global CMDFILE, CMD_ENABLED, LOG_ENABLED, ALLOW_ORIGIN, PID_FILE, CFG_DIRECTORY, API_KEYS, RATE_LIMITER
+    global CGI_URL, CGI_USER, CGI_PASS, CGI_VERIFY_SSL
 
     parser = OptionParser(description='Give Nagios a REST API.')
     parser.add_option('-o', '--allow-origin', dest='alloworigin',
@@ -1286,6 +1354,23 @@ def main(argv):
                       help='Path to TLS certificate file (PEM). Enables HTTPS.')
     parser.add_option('--tls-key', dest='tls_key', metavar='FILE',
                       help='Path to TLS private key file (PEM). Required with --tls-cert.')
+    parser.add_option('--nagios-cgi-url', dest='cgi_url', metavar='URL',
+                      default=os.environ.get('NAGIOS_CGI_URL'),
+                      help='Base URL for Nagios CGI (e.g., '
+                      'https://nagios.example.com/nagios/cgi-bin). '
+                      'Enables the /availability endpoint. '
+                      'Can also be set via NAGIOS_CGI_URL env var.')
+    parser.add_option('--nagios-cgi-user', dest='cgi_user', metavar='USER',
+                      default=os.environ.get('NAGIOS_CGI_USER'),
+                      help='Username for Nagios CGI HTTP basic auth. '
+                      'Can also be set via NAGIOS_CGI_USER env var.')
+    parser.add_option('--nagios-cgi-pass', dest='cgi_pass', metavar='PASS',
+                      default=os.environ.get('NAGIOS_CGI_PASS'),
+                      help='Password for Nagios CGI HTTP basic auth. '
+                      'Can also be set via NAGIOS_CGI_PASS env var.')
+    parser.add_option('--nagios-cgi-verify-ssl', dest='cgi_verify_ssl',
+                      action='store_true', default=False,
+                      help='Verify SSL certificates when connecting to Nagios CGI.')
     (options, args) = parser.parse_args(args=argv[1:])
 
     if options.apikeyfile is not None:
@@ -1329,6 +1414,13 @@ def main(argv):
     CFG_DIRECTORY = options.cfgdirectory
     PID_FILE = options.pid_file
     write_pid()
+
+    if options.cgi_url:
+        CGI_URL = options.cgi_url.rstrip('/')
+        CGI_USER = options.cgi_user
+        CGI_PASS = options.cgi_pass
+        CGI_VERIFY_SSL = options.cgi_verify_ssl
+        log.info('Nagios CGI integration enabled: %s', CGI_URL)
 
     if CMD_ENABLED and API_KEYS is None:
         log.warning('Command file is enabled but no API key file is configured. '

@@ -560,6 +560,91 @@ def do_acknowledge_problem(cmd, args, opts):
     return 0
 
 
+def do_availability(cmd, args, opts):
+    '''Fetch availability report for a host or service. Usage:
+
+        %prog availability <host> [service] [opts]
+
+    host must be a hostname that Nagios knows about. If specified,
+    service is a service that exists on that host.
+
+    Available options:
+
+        --period=PERIOD     Time period: 24h, 7d, or 30d. Default: 24h
+
+        --start=EPOCH       Start timestamp (overrides --period)
+
+        --end=EPOCH         End timestamp (overrides --period)
+
+    Example:
+
+        %prog availability web01
+            # show 24h availability for web01
+
+        %prog availability web01 "HTTPS" --period=7d
+            # show 7d availability for HTTPS service on web01
+
+    '''
+    p = OptionParser(usage=trim(do_availability.__doc__))
+    p.disable_interspersed_args()
+    p.add_option('--period', dest='period', default='24h',
+                 help='Time period: 24h, 7d, or 30d. Default: 24h')
+    p.add_option('--start', dest='start', default=None,
+                 help='Start epoch timestamp (overrides --period)')
+    p.add_option('--end', dest='end', default=None,
+                 help='End epoch timestamp (overrides --period)')
+
+    selargs = consume_host_service(args)
+    if selargs is None:
+        p.error('Failed to locate host/service to act on')
+
+    (options, args) = p.parse_args(opts)
+
+    if options.start and options.end:
+        selargs += ['start=%s' % options.start, 'end=%s' % options.end]
+    else:
+        selargs += ['period=%s' % options.period]
+
+    res = api(['availability'] + selargs)
+    if isinstance(res, int):
+        return res
+    if not isinstance(res, dict):
+        return critical('API returned unknown object type')
+    if not res['success']:
+        return critical('Failed: %s' % res['content'])
+
+    content = res['content']
+    host = content.get('host', '')
+    service = content.get('service', '')
+    target = '%s/%s' % (host, service) if service else host
+    print('Availability for %s' % target)
+    print()
+
+    breakdown = content.get('breakdown', {})
+    for state in ('OK', 'WARNING', 'CRITICAL', 'UNKNOWN', 'Undetermined'):
+        if state not in breakdown:
+            continue
+        print('  %s:' % state)
+        for reason, data in breakdown[state].items():
+            parts = ['%s: %s' % (reason, data.get('total_pct', 'N/A'))]
+            if 'known_pct' in data:
+                parts.append('(known: %s)' % data['known_pct'])
+            print('    %s' % ' '.join(parts))
+    print()
+
+    log_entries = content.get('log', [])
+    if log_entries:
+        print('  Event Log:')
+        for entry in log_entries:
+            print('    %s - %s  %s  [%s] %s' % (
+                entry.get('start', ''),
+                entry.get('end', ''),
+                entry.get('duration', ''),
+                entry.get('state_type', ''),
+                entry.get('info', '')))
+    return 0
+
+
 def do_hosts(cmd, args, opts):
     '''Return a plain list of all hosts.
 
@@ -719,6 +804,7 @@ def main(argv):
         'enable-checks': do_enable_checks,
         'disable-checks': do_disable_checks,
         'acknowledge-problem': do_acknowledge_problem,
+        'availability': do_availability,
         'hosts': do_hosts,
         'services': do_services,
     }

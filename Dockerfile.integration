@@ -1,0 +1,71 @@
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+# Nagios version config
+ENV NAGIOS_VERSION=4.5.11
+ENV NAGIOS_PLUGINS_VERSION=2.4.12
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc make autoconf libc6-dev libssl-dev libgd-dev \
+    libperl-dev wget unzip iputils-ping procps \
+    apache2 apache2-utils libapache2-mod-fcgid \
+    libffi-dev libxml2-dev libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create nagios user/group (nagios make install expects both nagios and nagcmd groups)
+RUN groupadd -r nagios && \
+    groupadd -r nagcmd && \
+    useradd -r -m -d /usr/local/nagios -g nagios nagios && \
+    usermod -a -G nagcmd nagios && \
+    usermod -a -G nagcmd www-data
+
+# Build Nagios Core from source
+WORKDIR /tmp/nagios-build
+RUN wget -q "https://assets.nagios.com/downloads/nagioscore/releases/nagios-${NAGIOS_VERSION}.tar.gz" && \
+    tar xzf "nagios-${NAGIOS_VERSION}.tar.gz" && \
+    cd "nagios-${NAGIOS_VERSION}" && \
+    ./configure --with-command-group=nagcmd --with-httpd-conf=/etc/apache2/sites-enabled 2>&1 | tail -5 && \
+    make all 2>&1 | tail -3 && \
+    make install && \
+    make install-commandmode && \
+    make install-init && \
+    make install-config && \
+    cd /tmp && rm -rf /tmp/nagios-build
+
+# Build Nagios Plugins from source
+WORKDIR /tmp/plugins-build
+RUN wget -q "https://github.com/nagios-plugins/nagios-plugins/releases/download/release-${NAGIOS_PLUGINS_VERSION}/nagios-plugins-${NAGIOS_PLUGINS_VERSION}.tar.gz" && \
+    tar xzf "nagios-plugins-${NAGIOS_PLUGINS_VERSION}.tar.gz" && \
+    cd "nagios-plugins-${NAGIOS_PLUGINS_VERSION}" && \
+    ./configure --with-nagios-user=nagios --with-nagios-group=nagios 2>&1 | tail -5 && \
+    make 2>&1 | tail -3 && \
+    make install && \
+    cd /tmp && rm -rf /tmp/plugins-build
+
+# Configure Apache for Nagios CGI (needed for availability integration tests)
+RUN a2enmod cgi && \
+    htpasswd -cb /usr/local/nagios/etc/htpasswd.users nagiosadmin nagiosadmin && \
+    chmod o+rx /usr/local/nagios && \
+    chmod o+rx /usr/local/nagios/sbin && \
+    chmod o+rx /usr/local/nagios/share
+COPY tests/integration/nagios-apache.conf /etc/apache2/sites-enabled/nagios.conf
+
+# Install nagios-api and test dependencies
+WORKDIR /opt/nagios-api
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir pytest requests
+
+COPY . .
+RUN pip install --no-cache-dir --no-deps -e .
+
+# Install minimal Nagios config for integration testing
+COPY tests/integration/nagios-conf/ /usr/local/nagios/etc/
+
+# Copy entrypoint
+COPY tests/integration/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

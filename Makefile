@@ -5,14 +5,15 @@ RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/nul
 BUILD_STAMP := .build.stamp
 BUILD_DEPS := Dockerfile.dev requirements.txt vars.env setup.py nagios/__init__.py nagios/core.py
 
-.PHONY: help build lint test audit deb rpm packages clean
+.PHONY: help build lint test integration-test audit deb rpm packages clean
 
 help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "  build   Build the dev container image"
 	@echo "  lint    Run flake8 linter"
-	@echo "  test    Run pytest"
+	@echo "  test    Run unit tests (pytest)"
+	@echo "  integration-test  Run integration tests (builds Nagios in container)"
 	@echo "  audit   Audit dependencies for vulnerabilities"
 	@echo "  deb      Build .deb package"
 	@echo "  rpm      Build .rpm package"
@@ -32,6 +33,9 @@ lint: $(BUILD_STAMP)
 
 test: $(BUILD_STAMP)
 	scripts/test.sh
+
+integration-test:
+	scripts/integration-test.sh
 
 audit: $(BUILD_STAMP)
 	scripts/audit.sh
