@@ -44,13 +44,50 @@ clients who request it.
 
 ## Build, Lint & Test
 
-All run in temporary Docker containers to avoid polluting the host:
+All run in temporary containers (podman or docker) to avoid polluting the host.
+A Makefile is provided for convenience:
 
 ```
-scripts/build.sh    # Build dev image, verify package imports
-scripts/lint.sh     # Run flake8 (auto-builds image if needed)
-scripts/test.sh     # Run pytest on tests/ (auto-builds image if needed)
+make build              # Build dev image, verify package imports
+make lint               # Run flake8 (auto-builds image if needed)
+make test               # Run unit tests via pytest (auto-builds image if needed)
+make integration-test   # Run integration tests (see below)
+make audit              # Audit dependencies for vulnerabilities
+make clean              # Remove the dev container image
 ```
+
+Or call the scripts directly:
+
+```
+scripts/build.sh
+scripts/lint.sh
+scripts/test.sh
+scripts/integration-test.sh
+```
+
+### Integration Tests
+
+The integration test suite (`make integration-test`) builds a container that
+compiles Nagios Core 4.5.11 and plugins from source, starts the Nagios daemon,
+Apache (for CGI-based availability reports), and nagios-api, then runs 76
+pytest tests against the live API. Tests cover:
+
+- **Read endpoints** — `/state`, `/objects`, `/host`, `/service`, `/status`,
+  `/problems`, `/log`
+- **Write endpoints** — `submit_result`, `schedule_downtime`, `cancel_downtime`,
+  `schedule_hostgroup_downtime`, `disable_notifications`, `enable_notifications`,
+  `disable_checks`, `enable_checks`, `schedule_check`, `acknowledge_problem`,
+  `remove_acknowledgement`, `add_comment`, `delete_comment`, `raw_command`,
+  `restart_nagios`
+- **State change verification** — passive check results, downtime lifecycle,
+  acknowledgement lifecycle, comment lifecycle, notification toggling
+- **Availability reports** — host and service availability via Nagios `avail.cgi`,
+  period shorthands, custom timestamps, error handling
+- **Security** — method enforcement (POST-only endpoints reject GET), unknown
+  endpoint handling, information disclosure prevention
+
+The first run takes a few minutes to compile Nagios; subsequent runs use the
+cached image layer.
 
 ## Using the API
 The server speaks [JSON](http://www.json.org/). You can either GET data from it or POST data to

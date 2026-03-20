@@ -12,7 +12,7 @@ help:
 	@echo ""
 	@echo "  build   Build the dev container image"
 	@echo "  lint    Run flake8 linter"
-	@echo "  test    Run unit tests (pytest)"
+	@echo "  test              Run unit tests (pytest)"
 	@echo "  integration-test  Run integration tests (builds Nagios in container)"
 	@echo "  audit   Audit dependencies for vulnerabilities"
 	@echo "  deb      Build .deb package"
